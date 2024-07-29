@@ -1,0 +1,15 @@
+{
+  "name": "node-dicom-rs-darwin-universal",
+  "version": "0.0.0",
+  "os": [
+    "darwin"
+  ],
+  "main": "node-dicom-rs.darwin-universal.node",
+  "files": [
+    "node-dicom-rs.darwin-universal.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  }
+}
