@@ -4,6 +4,9 @@ use dicom_object::open_file;
 use dicom_dump::dump_file;
 use napi::JsError;
 
+pub mod storescp;
+pub mod storescu;
+
 #[macro_use]
 extern crate napi_derive;
 

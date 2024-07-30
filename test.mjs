@@ -1,3 +1,9 @@
-import { sum, dicomDump } from './index.js'
+import { sum, dicomDump, StoreScp } from './index.js'
  
-dicomDump("./tmp/8B1FA77C.dcm");
+//dicomDump("./tmp/10DFA8F4.dcm");
+
+const server = new StoreScp(4445)
+
+server.listen((event, msg)=>{
+    console.log(event, msg)
+})
