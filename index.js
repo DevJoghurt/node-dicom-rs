@@ -310,9 +310,11 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Event, StoreScp, sum, dicomDump } = nativeBinding
+const { Event, StoreScp, StoreScu, DicomFile, sum, dicomDump } = nativeBinding
 
 module.exports.Event = Event
 module.exports.StoreScp = StoreScp
+module.exports.StoreScu = StoreScu
+module.exports.DicomFile = DicomFile
 module.exports.sum = sum
 module.exports.dicomDump = dicomDump

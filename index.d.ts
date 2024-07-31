@@ -6,7 +6,43 @@
 export const enum Event {
   Error = 'Error',
   Loading = 'Loading',
-  Ready = 'Ready'
+  Ready = 'Ready',
+  Success = 'Success'
+}
+export interface StoreScuOptions {
+  /**
+   * socket address to Store SCP,
+   * optionally with AE title
+   * (example: "STORE-SCP@127.0.0.1:104")
+   */
+  addr: string
+  /** verbose mode */
+  verbose?: boolean
+  /** the C-STORE message ID */
+  messageId?: number
+  /** the calling Application Entity title, [default: STORE-SCU]  */
+  callingAeTitle?: string
+  /**
+   * the called Application Entity title,
+   * overrides AE title in address if present [default: ANY-SCP]
+   */
+  calledAeTitle?: string
+  /** the maximum PDU length accepted by the SCU [default: 16384] */
+  maxPduLength?: number
+  /** fail if not all DICOM files can be transferred */
+  failFirst?: boolean
+  /** fail file transfer if it cannot be done without transcoding */
+  neverTranscode?: boolean
+  /** User Identity username */
+  username?: string
+  /** User Identity password */
+  password?: string
+  /** User Identity Kerberos service ticket */
+  kerberosServiceTicket?: string
+  /** User Identity SAML assertion */
+  samlAssertion?: string
+  /** User Identity JWT */
+  jwt?: string
 }
 export declare function sum(a: number, b: number): number
 export declare function dicomDump(file: string): void
@@ -17,3 +53,11 @@ export declare class StoreScp {
   constructor(port: number, dir?: string | undefined | null)
   listen(cb: (arg0: Event, arg1: string) => string): void
 }
+export type StoreSCU = StoreScu
+/** DICOM C-STORE SCU */
+export declare class StoreScu {
+  constructor(options: StoreScuOptions)
+  addFile(path: string): void
+  send(): void
+}
+export declare class DicomFile { }
