@@ -8,6 +8,8 @@ use dicom_ul::{
     association::ClientAssociationOptions,
     pdu::{PDataValue, PDataValueType, Pdu},
 };
+use napi::JsError;
+use tracing::{debug, error, info, warn, Level};
 use indicatif::{ProgressBar, ProgressStyle};
 use snafu::prelude::*;
 use snafu::Report;
@@ -94,6 +96,19 @@ enum Error {
     },
 }
 
+#[napi(string_enum)]
+pub enum ResultStatus {
+    Success,
+    Error
+}
+
+#[napi(object)]
+pub struct ResultObject {
+    /// Transfer Syntax UID
+    pub status: ResultStatus,
+    pub message: String
+}
+
 #[napi(object)]
 pub struct StoreSCUOptions {
     /// socket address to Store SCP,
@@ -158,6 +173,23 @@ impl StoreSCU {
         if options.never_transcode.is_some() {
             never_transcode = options.never_transcode.unwrap();
         }
+
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::FmtSubscriber::builder()
+                .with_max_level(if verbose {
+                    Level::DEBUG
+                } else {
+                    Level::INFO
+                })
+                .finish(),
+        )
+        .unwrap_or_else(|e| {
+            error!(
+                "Could not set up global logger: {}",
+                snafu::Report::from_error(e)
+            );
+        });
+
         StoreSCU {
             addr: options.addr,
             files: files,
@@ -182,15 +214,16 @@ impl StoreSCU {
     }
 
     #[napi]
-    pub fn send(&self) {
-        Self::store_scu_handler(self).unwrap_or_else(|e| {
-            eprintln!("{}", Report::from_error(e));
-            std::process::exit(-2);
+    pub fn send(&self) -> Result<ResultObject, JsError> {
+        let result = Self::store_scu_handler(self).unwrap_or_else(|e| {
+            error!("{}", Report::from_error(e));
+            std::process::exit(-1);
         });
+        Ok(result)
     }
 
 
-    fn store_scu_handler(&self) -> Result<(), Error> {
+    fn store_scu_handler(&self) -> Result<ResultObject, Error> {
         
         let verbose = self.verbose;
         let mut never_transcode = self.never_transcode;
@@ -224,7 +257,7 @@ impl StoreSCU {
     
         for file in checked_files {
             if verbose {
-                println!("[Info] Opening file '{}'...", file.display());
+                info!("Opening file '{}'...", file.display());
             }
     
             match check_file(&file) {
@@ -251,18 +284,18 @@ impl StoreSCU {
                     dicom_files.push(dicom_file);
                 }
                 Err(_) => {
-                    eprintln!("[Warn] Could not open file {} as DICOM", file.display());
+                    warn!("Could not open file {} as DICOM", file.display());
                 }
             }
         }
     
         if dicom_files.is_empty() {
-            eprintln!("[Error] No supported files to transfer");
+            error!("No supported files to transfer");
             std::process::exit(-1);
         }
     
         if verbose {
-            println!("[Info] Establishing association with '{}'...", self.addr);
+            info!("[Info] Establishing association with '{}'...", self.addr);
         }
     
         let mut scu_init = ClientAssociationOptions::new()
@@ -300,7 +333,7 @@ impl StoreSCU {
         let mut scu = scu_init.establish_with(&*self.addr).context(InitScuSnafu)?;
     
         if verbose {
-            println!("[Info] Association established");
+            info!("Association established");
         }
     
         for file in &mut dicom_files {
@@ -311,13 +344,13 @@ impl StoreSCU {
             match r {
                 Ok((pc, ts)) => {
                     if verbose {
-                        println!("[Info] {}: Selected presentation context: {:?}",file.file.display(),pc);
+                        info!("{}: Selected presentation context: {:?}",file.file.display(),pc);
                     }
                     file.pc_selected = Some(pc);
                     file.ts_selected = Some(ts);
                 }
                 Err(e) => {
-                    eprintln!("[Error] {}",Report::from_error(e));
+                    error!("{}",Report::from_error(e));
                     if fail_first {
                         let _ = scu.abort();
                         std::process::exit(-2);
@@ -375,8 +408,8 @@ impl StoreSCU {
                 let nbytes = cmd_data.len() + object_data.len();
     
                 if verbose {
-                    println!(
-                        "[Info] Sending file {} (~ {} kB), uid={}, sop={}, ts={}",
+                    info!(
+                        "Sending file {} (~ {} kB), uid={}, sop={}, ts={}",
                         file.file.display(),
                         nbytes / 1_000,
                         &file.sop_instance_uid,
@@ -427,7 +460,7 @@ impl StoreSCU {
                 }
     
                 if verbose {
-                    println!("[Info] Awaiting response...");
+                    info!("Awaiting response...");
                 }
     
                 let rsp_pdu = scu
@@ -445,7 +478,7 @@ impl StoreSCU {
                         )
                         .whatever_context("Could not read response from SCP")?;
                         if verbose {
-                            println!("[Info] Full response: {:?}", cmd_obj);
+                            debug!("Full response: {:?}", cmd_obj);
                         }
                         let status = cmd_obj
                             .element(tags::STATUS)
@@ -460,25 +493,25 @@ impl StoreSCU {
                             // Success
                             0 => {
                                 if verbose {
-                                    println!("[Info] Successfully stored instance {}", storage_sop_instance_uid);
+                                    info!("Successfully stored instance {}", storage_sop_instance_uid);
                                 }
                             }
                             // Warning
                             1 | 0x0107 | 0x0116 | 0xB000..=0xBFFF => {
-                                println!(
-                                    "[Warn] Possible issue storing instance `{}` (status code {:04X}H)",
+                                warn!(
+                                    "Possible issue storing instance `{}` (status code {:04X}H)",
                                     storage_sop_instance_uid, status
                                 );
                             }
                             0xFF00 | 0xFF01 => {
-                                println!(
-                                    "[Warn] Possible issue storing instance `{}`: status is pending (status code {:04X}H)",
+                                warn!(
+                                    "Possible issue storing instance `{}`: status is pending (status code {:04X}H)",
                                     storage_sop_instance_uid, status
                                 );
                             }
                             0xFE00 => {
-                                eprintln!(
-                                    "[Error] Could not store instance `{}`: operation cancelled",
+                                error!(
+                                    "Could not store instance `{}`: operation cancelled",
                                     storage_sop_instance_uid
                                 );
                                 if fail_first {
@@ -487,8 +520,8 @@ impl StoreSCU {
                                 }
                             }
                             _ => {
-                                eprintln!(
-                                    "[Error] Failed to store instance `{}` (status code {:04X}H)",
+                                error!(
+                                    "Failed to store instance `{}` (status code {:04X}H)",
                                     storage_sop_instance_uid, status
                                 );
                                 if fail_first {
@@ -506,7 +539,7 @@ impl StoreSCU {
                     | pdu @ Pdu::ReleaseRQ
                     | pdu @ Pdu::ReleaseRP
                     | pdu @ Pdu::AbortRQ { .. } => {
-                        eprintln!("[Error] Unexpected SCP response: {:?}", pdu);
+                        error!("Unexpected SCP response: {:?}", pdu);
                         let _ = scu.abort();
                         std::process::exit(-2);
                     }
@@ -523,7 +556,11 @@ impl StoreSCU {
     
         scu.release()
             .whatever_context("Failed to release SCU association")?;
-        Ok(())
+
+        Ok(ResultObject {
+            status: ResultStatus::Success,
+            message: String::from("All files have been sent successfully")
+        })
     }
 
 
