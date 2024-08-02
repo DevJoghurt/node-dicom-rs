@@ -1,23 +1,23 @@
 {
-    "name": "@napi-rs/package-template-darwin-arm64",
-    "version": "0.0.4",
-    "os": [
-      "darwin"
-    ],
-    "cpu": [
-      "x64"
-    ],
-    "main": "node-dicom.darwin-x64.node",
-    "files": [
-      "node-dicom.darwin-x64.node"
-    ],
-    "license": "MIT",
-    "engines": {
-      "node": ">= 10"
-    },
-    "publishConfig": {
-      "registry": "https://registry.npmjs.org/",
-      "access": "public"
-    },
-    "repository": "git@github.com:DevJoghurt/node-dicom-rs.git"
+  "name": "@napi-rs/package-template-darwin-arm64",
+  "version": "0.0.5",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "node-dicom.darwin-x64.node",
+  "files": [
+    "node-dicom.darwin-x64.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git"
 }
