@@ -1,5 +1,5 @@
 {
-  "name": "@nhealth/node-dicom-win32-x64-msvc",
+  "name": "@nuxthealth/node-dicom-win32-x64-msvc",
   "version": "0.0.0",
   "os": [
     "win32"
@@ -19,5 +19,5 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "repository": "https://github.com/DevJoghurt/node-dicom-rs.git"
+  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git"
 }

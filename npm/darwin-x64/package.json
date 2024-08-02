@@ -1,5 +1,5 @@
 {
-  "name": "@nhealth/node-dicom-darwin-x64",
+  "name": "@nuxthealth/node-dicom-darwin-x64",
   "version": "0.0.0",
   "os": [
     "darwin"
@@ -19,5 +19,5 @@
     "registry": "https://registry.npmjs.org/",
     "access": "public"
   },
-  "repository": "https://github.com/DevJoghurt/node-dicom-rs.git"
+  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git"
 }
