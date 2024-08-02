@@ -127,7 +127,7 @@ export type StoreSCP = StoreScp
 /** DICOM C-STORE SCP */
 export declare class StoreScp {
   constructor(options: StoreScpOptions)
-  listen(cb: (arg0: Event, arg1: EventData) => string): void
+  listen(cb: (arg0: Event, arg1: EventData) => void): void
 }
 export type StoreSCU = StoreScu
 /** DICOM C-STORE SCU */

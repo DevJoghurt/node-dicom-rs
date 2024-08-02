@@ -134,7 +134,7 @@ impl StoreSCP {
     }
 
     #[napi]
-    pub fn listen(&self, cb: Function<(Event, EventData), String>) -> Result<(), JsError> {
+    pub fn listen(&self, cb: Function<(Event, EventData), ()>) -> Result<(), JsError> {
 
         tracing::subscriber::set_global_default(
             tracing_subscriber::FmtSubscriber::builder()
@@ -192,7 +192,7 @@ impl StoreSCP {
         Ok(())
     }
 
-    fn run(scu_stream: TcpStream, args: &StoreSCP, cb: &Function<(Event, EventData), String>) -> Result<(), Whatever> {
+    fn run(scu_stream: TcpStream, args: &StoreSCP, cb: &Function<(Event, EventData), ()>) -> Result<(), Whatever> {
         let StoreSCP {
             verbose,
             calling_ae_title,

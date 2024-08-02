@@ -6,7 +6,10 @@
   "napi": {
     "name": "node-dicom",
     "triples": {
-      "defaults": true
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin"
+      ]
     }
   },
   "license": "MIT",
