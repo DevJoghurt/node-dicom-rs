@@ -51,5 +51,8 @@
       "@swc-node/register/esm-register"
     ]
   },
-  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git"
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/DevJoghurt/node-dicom-rs.git"
+  }
 }
