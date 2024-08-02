@@ -5,11 +5,11 @@
     "darwin"
   ],
   "cpu": [
-    "x64"
+    "arm64"
   ],
-  "main": "node-dicom.darwin-x64.node",
+  "main": "node-dicom.darwin-arm64.node",
   "files": [
-    "node-dicom.darwin-x64.node"
+    "node-dicom.darwin-arm64.node"
   ],
   "license": "MIT",
   "engines": {
