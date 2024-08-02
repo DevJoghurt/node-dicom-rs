@@ -1,5 +1,5 @@
 {
-  "name": "node-dicom-rs-win32-x64-msvc",
+  "name": "@nhealth/node-dicom-win32-x64-msvc",
   "version": "0.0.0",
   "os": [
     "win32"
@@ -7,12 +7,17 @@
   "cpu": [
     "x64"
   ],
-  "main": "node-dicom-rs.win32-x64-msvc.node",
+  "main": "node-dicom.win32-x64-msvc.node",
   "files": [
-    "node-dicom-rs.win32-x64-msvc.node"
+    "node-dicom.win32-x64-msvc.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "https://github.com/DevJoghurt/node-dicom-rs.git"
 }

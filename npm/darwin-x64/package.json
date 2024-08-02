@@ -1,5 +1,5 @@
 {
-  "name": "node-dicom-rs-darwin-x64",
+  "name": "@nhealth/node-dicom-darwin-x64",
   "version": "0.0.0",
   "os": [
     "darwin"
@@ -7,12 +7,17 @@
   "cpu": [
     "x64"
   ],
-  "main": "node-dicom-rs.darwin-x64.node",
+  "main": "node-dicom.darwin-x64.node",
   "files": [
-    "node-dicom-rs.darwin-x64.node"
+    "node-dicom.darwin-x64.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
-  }
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "https://github.com/DevJoghurt/node-dicom-rs.git"
 }

@@ -1,5 +1,5 @@
 {
-  "name": "node-dicom-rs-linux-x64-gnu",
+  "name": "@nhealth/node-dicom-linux-x64-gnu",
   "version": "0.0.0",
   "os": [
     "linux"
@@ -7,14 +7,19 @@
   "cpu": [
     "x64"
   ],
-  "main": "node-dicom-rs.linux-x64-gnu.node",
+  "main": "node-dicom.linux-x64-gnu.node",
   "files": [
-    "node-dicom-rs.linux-x64-gnu.node"
+    "node-dicom.linux-x64-gnu.node"
   ],
   "license": "MIT",
   "engines": {
     "node": ">= 10"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "https://github.com/DevJoghurt/node-dicom-rs.git",
   "libc": [
     "glibc"
   ]
