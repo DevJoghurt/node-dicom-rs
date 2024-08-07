@@ -167,7 +167,7 @@ impl StoreSCP {
                 );
                 let _ = cb.call((Event::OnServerStarted, {
                     EventData {
-                        message: "Listening on".to_string(),
+                        message: "StoreSCP Server started successfully".to_string(),
                         data: Some(listen_addr.to_string())
                     }
                 }));

@@ -1,7 +1,7 @@
 import { StoreScp } from '../index.js'
 
 const server = new StoreScp({
-    port: 4445,
+    port: 4446,
     outDir: './tmp/pacs',
     verbose: false
 })
