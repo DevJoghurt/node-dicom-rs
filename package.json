@@ -1,6 +1,6 @@
 {
   "name": "@nuxthealth/node-dicom",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
@@ -23,7 +23,8 @@
     "ava": "^6.0.1",
     "@swc-node/register": "^1.10.6",
     "@swc/core": "^1.6.13",
-    "typescript": "^5.5.3"
+    "typescript": "^5.5.3",
+    "bumpp": "^9.5.1"
   },
   "engines": {
     "node": ">= 10"
@@ -39,7 +40,8 @@
     "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
     "universal": "napi universal",
-    "version": "napi version"
+    "version": "napi version",
+    "bumpp": "bumpp"
   },
   "ava": {
     "extensions": {
