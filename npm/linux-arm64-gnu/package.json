@@ -1,0 +1,26 @@
+{
+  "name": "@nuxthealth/node-dicom-linux-arm64-gnu",
+  "version": "0.0.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "node-dicom.linux-arm64-gnu.node",
+  "files": [
+    "node-dicom.linux-arm64-gnu.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "repository": "git@github.com:DevJoghurt/node-dicom-rs.git",
+  "libc": [
+    "glibc"
+  ]
+}
