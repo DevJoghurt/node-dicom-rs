@@ -9,5 +9,5 @@ test('read dicom file', (t) => {
 
   const data = file.getElements();
 
-  t.is(data.patientName, 'node-metrics');
+  t.is(data.patientName, 'CompressedSamples^CT1');
 })
