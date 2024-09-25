@@ -5,7 +5,7 @@ use std::{
 
 use napi::{
     bindgen_prelude::Function,
-    JsError
+    JsError,
 };
 
 use dicom_core::{dicom_value, DataElement, VR};
@@ -98,7 +98,7 @@ impl StoreSCP {
     #[napi(constructor)]
     pub fn new(options: StoreSCPOptions) -> Self {
         let mut verbose: bool = false;
-        if options.verbose.is_some() {  
+        if options.verbose.is_some() {
             verbose = options.verbose.unwrap();
         }
         let mut calling_ae_title: String = String::from("STORE-SCP");
@@ -106,19 +106,19 @@ impl StoreSCP {
             calling_ae_title = options.calling_ae_title.unwrap();
         }
         let mut strict: bool = false;
-        if options.strict.is_some() {  
+        if options.strict.is_some() {
             strict = options.strict.unwrap();
         }
         let mut uncompressed_only: bool = false;
-        if options.uncompressed_only.is_some() {  
+        if options.uncompressed_only.is_some() {
             uncompressed_only = options.uncompressed_only.unwrap();
         }
         let mut promiscuous: bool = false;
-        if options.promiscuous.is_some() {  
+        if options.promiscuous.is_some() {
             promiscuous = options.promiscuous.unwrap();
         }
         let mut max_pdu_length: u32 = 16384;
-        if options.max_pdu_length.is_some() {  
+        if options.max_pdu_length.is_some() {
             max_pdu_length = options.max_pdu_length.unwrap();
         }
         StoreSCP {
@@ -151,14 +151,15 @@ impl StoreSCP {
                 snafu::Report::from_error(e)
             );
         });
-    
+
         std::fs::create_dir_all(&self.out_dir).unwrap_or_else(|e| {
             error!("Could not create output directory: {}", e);
             std::process::exit(-2);
         });
-    
+
         let listen_addr = SocketAddrV4::new(Ipv4Addr::from(0), self.port);
         let listener = TcpListener::bind(listen_addr);
+
         match listener {
             Ok(l) => {
                 info!(
@@ -205,19 +206,19 @@ impl StoreSCP {
         } = args;
         let verbose = *verbose;
         let out_dir = PathBuf::from(out_dir);
-    
+
         let mut buffer: Vec<u8> = Vec::with_capacity(*max_pdu_length as usize);
         let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
         let mut msgid = 1;
         let mut sop_class_uid = "".to_string();
         let mut sop_instance_uid = "".to_string();
-    
+
         let mut options = dicom_ul::association::ServerAssociationOptions::new()
             .accept_any()
             .ae_title(calling_ae_title)
             .strict(*strict)
             .promiscuous(*promiscuous);
-    
+
         if *uncompressed_only {
             options = options
                 .with_transfer_syntax("1.2.840.10008.1.2")
@@ -229,21 +230,21 @@ impl StoreSCP {
                 }
             }
         };
-    
+
         for uid in ABSTRACT_SYNTAXES {
             options = options.with_abstract_syntax(*uid);
         }
-    
+
         let mut association = options
             .establish(scu_stream)
             .whatever_context("could not establish association")?;
-    
+
         info!("New association from {}", association.client_ae_title());
         debug!(
             "> Presentation contexts: {:?}",
             association.presentation_contexts()
         );
-    
+
         loop {
             match association.receive() {
                 Ok(mut pdu) => {
@@ -256,7 +257,7 @@ impl StoreSCP {
                                 debug!("Ignoring empty PData PDU");
                                 continue;
                             }
-    
+
                             for data_value in data {
                                 if data_value.value_type == PDataValueType::Data && !data_value.is_last
                                 {
@@ -270,7 +271,7 @@ impl StoreSCP {
                                             .erased();
                                     let data_value = &data_value;
                                     let v = &data_value.data;
-    
+
                                     let obj = InMemDicomObject::read_dataset_with_ts(v.as_slice(), &ts)
                                         .whatever_context("failed to read incoming DICOM command")?;
                                     let command_field = obj
@@ -278,18 +279,18 @@ impl StoreSCP {
                                         .whatever_context("Missing Command Field")?
                                         .uint16()
                                         .whatever_context("Command Field is not an integer")?;
-    
+
                                     if command_field == 0x0030 {
                                         // Handle C-ECHO-RQ
                                         let cecho_response = create_cecho_response(msgid);
                                         let mut cecho_data = Vec::new();
-    
+
                                         cecho_response
                                             .write_dataset_with_ts(&mut cecho_data, &ts)
                                             .whatever_context(
                                                 "could not write C-ECHO response object",
                                             )?;
-    
+
                                         let pdu_response = Pdu::PData {
                                             data: vec![dicom_ul::pdu::PDataValue {
                                                 presentation_context_id: data_value
@@ -330,14 +331,14 @@ impl StoreSCP {
                                     && data_value.is_last
                                 {
                                     instance_buffer.append(&mut data_value.data);
-    
+
                                     let presentation_context = association
                                         .presentation_contexts()
                                         .iter()
                                         .find(|pc| pc.id == data_value.presentation_context_id)
                                         .whatever_context("missing presentation context")?;
                                     let ts = &presentation_context.transfer_syntax;
-    
+
                                     let obj = InMemDicomObject::read_dataset_with_ts(
                                         instance_buffer.as_slice(),
                                         TransferSyntaxRegistry.get(ts).unwrap(),
@@ -362,7 +363,7 @@ impl StoreSCP {
                                             "failed to build DICOM meta file information",
                                         )?;
                                     let file_obj = obj.with_exact_meta(file_meta);
-    
+
                                     // write the files to the current directory with their SOPInstanceUID as filenames
                                     let mut file_path = out_dir.clone();
                                     file_path.push(
@@ -377,24 +378,24 @@ impl StoreSCP {
                                         message: "Stored file".to_string(),
                                         data: Some(file_path.display().to_string())
                                     }));
-    
+
                                     // send C-STORE-RSP object
                                     // commands are always in implict VR LE
                                     let ts =
                                         dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN
                                             .erased();
-    
+
                                     let obj = create_cstore_response(
                                         msgid,
                                         &sop_class_uid,
                                         &sop_instance_uid,
                                     );
-    
+
                                     let mut obj_data = Vec::new();
-    
+
                                     obj.write_dataset_with_ts(&mut obj_data, &ts)
                                         .whatever_context("could not write response object")?;
-    
+
                                     let pdu_response = Pdu::PData {
                                         data: vec![dicom_ul::pdu::PDataValue {
                                             presentation_context_id: data_value.presentation_context_id,
@@ -452,7 +453,7 @@ impl StoreSCP {
                 }
             }
         }
-    
+
         if let Ok(peer_addr) = association.inner_stream().peer_addr() {
             info!(
                 "Dropping connection with {} ({})",
@@ -462,7 +463,7 @@ impl StoreSCP {
         } else {
             info!("Dropping connection with {}", association.client_ae_title());
         }
-    
+
         Ok(())
     }
 

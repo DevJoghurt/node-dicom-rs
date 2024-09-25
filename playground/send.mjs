@@ -6,10 +6,9 @@ const sender = new StoreScu({
     verbose: true
 });
 
-sender.addFile('./tmp/8B1FA77C.dcm');
-sender.addFile('./tmp/6AD34A72.dcm');
+sender.addFile('./__test__/fixtures/test.dcm');
 
 
 const result = sender.send();
 
-console.log(result)
+console.log(result);
