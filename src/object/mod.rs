@@ -184,20 +184,27 @@ impl DicomFile {
         }
     }
 
+    /**
+     * Close the DICOM file to free resources
+     */
+    #[napi]
+    pub fn close(&mut self) {
+        self.dicom_file = None;
+    }
+
     fn get_element_value(&self, tag: Tag) -> Result<Option<String>, JsError> {
         if self.dicom_file.is_none() {
             return Err(JsError::from(napi::Error::from_reason("File not opened".to_string())));
         }
         let obj = self.dicom_file.as_ref().unwrap();
-    
+
         let element = obj.element(tag);
-    
+
         match element {
             Ok(p) => p.to_str().map(|s| Some(s.to_string())).map_err(|e| JsError::from(napi::Error::from_reason(e.to_string()))),
             Err(e) => Err(JsError::from(napi::Error::from_reason(e.to_string()))),
         }
     }
-
 }
 
 fn check_file(file: &Path) -> Result<DicomFileMeta, Error> {
