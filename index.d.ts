@@ -123,6 +123,7 @@ export interface DicomElements {
   /** Instance Number */
   instanceNumber?: string
 }
+export declare function saveRawPixelData(filePath: string, outPath: string): string
 export type StoreSCP = StoreScp
 /** DICOM C-STORE SCP */
 export declare class StoreScp {

@@ -87,7 +87,7 @@ impl DicomFile {
     #[napi]
     pub fn check(&self, path: String) -> Result<DicomFileMeta, JsError> {
         let file = PathBuf::from(path);
-        let obj = check_file(file.as_path());
+        let obj = Self::check_file(file.as_path());
 
         match obj {
             Ok(obj) => Ok(obj),
@@ -205,25 +205,47 @@ impl DicomFile {
             Err(e) => Err(JsError::from(napi::Error::from_reason(e.to_string()))),
         }
     }
+
+    fn check_file(file: &Path) -> Result<DicomFileMeta, Error> {
+        // Ignore DICOMDIR files until better support is added
+        let _ = (file.file_name() != Some(OsStr::new("DICOMDIR")))
+            .then_some(false)
+            .whatever_context("DICOMDIR file not supported")?;
+        let dicom_file = dicom_object::OpenFileOptions::new()
+            .read_until(Tag(0x0001, 0x000))
+            .open_file(file)
+            .with_whatever_context(|_| format!("Could not open DICOM file {}", file.display()))?;
+
+        let meta = dicom_file.meta();
+
+        let storage_sop_class_uid = &meta.media_storage_sop_class_uid;
+        let storage_sop_instance_uid = &meta.media_storage_sop_instance_uid;
+
+        Ok(DicomFileMeta {
+            sop_class_uid: storage_sop_class_uid.to_string(),
+            sop_instance_uid: storage_sop_instance_uid.to_string(),
+        })
+    }
 }
 
-fn check_file(file: &Path) -> Result<DicomFileMeta, Error> {
-    // Ignore DICOMDIR files until better support is added
-    let _ = (file.file_name() != Some(OsStr::new("DICOMDIR")))
-        .then_some(false)
-        .whatever_context("DICOMDIR file not supported")?;
-    let dicom_file = dicom_object::OpenFileOptions::new()
-        .read_until(Tag(0x0001, 0x000))
-        .open_file(file)
-        .with_whatever_context(|_| format!("Could not open DICOM file {}", file.display()))?;
+#[napi]
+pub fn save_raw_pixel_data(file_path: String ,out_path: String) -> Result<String, JsError> {
+    let file = PathBuf::from(file_path);
+    let dicom_file = open_file(file).unwrap();
 
-    let meta = dicom_file.meta();
+    let pixel_data = dicom_file.element(tags::PIXEL_DATA);
 
-    let storage_sop_class_uid = &meta.media_storage_sop_class_uid;
-    let storage_sop_instance_uid = &meta.media_storage_sop_instance_uid;
-
-    Ok(DicomFileMeta {
-        sop_class_uid: storage_sop_class_uid.to_string(),
-        sop_instance_uid: storage_sop_instance_uid.to_string(),
-    })
+    match pixel_data {
+        Ok(p) => {
+            let data = p.to_bytes().map_err(|e| JsError::from(napi::Error::from_reason(e.to_string())));
+            match data {
+                Ok(d) => {
+                    let _ = std::fs::write(out_path, d).map_err(|e| JsError::from(napi::Error::from_reason(e.to_string())));
+                    Ok("Pixel data saved".to_string())
+                },
+                Err(e) => return Err(e),
+            }
+        },
+        Err(e) => Err(JsError::from(napi::Error::from_reason(e.to_string()))),
+    }
 }

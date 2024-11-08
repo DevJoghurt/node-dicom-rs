@@ -310,10 +310,11 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { StoreScp, Event, StoreScu, DicomFile, ResultStatus } = nativeBinding
+const { StoreScp, Event, StoreScu, DicomFile, ResultStatus, saveRawPixelData } = nativeBinding
 
 module.exports.StoreScp = StoreScp
 module.exports.Event = Event
 module.exports.StoreScu = StoreScu
 module.exports.DicomFile = DicomFile
 module.exports.ResultStatus = ResultStatus
+module.exports.saveRawPixelData = saveRawPixelData
