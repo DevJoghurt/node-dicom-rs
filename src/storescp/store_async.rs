@@ -1,13 +1,14 @@
 use dicom_dictionary_std::tags;
+use dicom_core::{dicom_value, DataElement, VR};
+use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder,};
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
-use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_ul::{pdu::PDataValueType, Pdu};
 use snafu::{OptionExt, Report, ResultExt, Whatever};
 use std::path::PathBuf;
 use tracing::{debug, info, warn, error};
 
-use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreSCP};
+use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
@@ -417,3 +418,54 @@ pub async fn run_store_async(
         "procedure_info": procedure_info,
     })))
 }
+
+
+fn create_cstore_response(
+    message_id: u16,
+    sop_class_uid: &str,
+    sop_instance_uid: &str,
+  ) -> InMemDicomObject<StandardDataDictionary> {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(
+            tags::AFFECTED_SOP_CLASS_UID,
+            VR::UI,
+            dicom_value!(Str, sop_class_uid),
+        ),
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8001])),
+  
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [0x0101]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
+  
+        DataElement::new(
+            tags::AFFECTED_SOP_INSTANCE_UID,
+            VR::UI,
+            dicom_value!(Str, sop_instance_uid),
+        ),
+    ])
+  }
+  
+  fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
+    InMemDicomObject::command_from_element_iter([
+        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8030])),
+        DataElement::new(
+            tags::MESSAGE_ID_BEING_RESPONDED_TO,
+            VR::US,
+            dicom_value!(U16, [message_id]),
+        ),
+        DataElement::new(
+            tags::COMMAND_DATA_SET_TYPE,
+            VR::US,
+            dicom_value!(U16, [0x0101]),
+        ),
+        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
+    ])
+  }
