@@ -7,7 +7,7 @@ use std::sync::Arc;
 use snafu::Report;
 use tracing::{error, info, Level};
 
-use tokio::sync::{broadcast, Notify, watch};
+use tokio::sync::{broadcast, Notify};
 use tokio::runtime::Runtime;
 
 mod transfer;
@@ -21,7 +21,6 @@ lazy_static::lazy_static! {
     static ref EVENT_CHANNEL: (EventSender, EventReceiver) = broadcast::channel(100);
     static ref RUNTIME: Runtime = Runtime::new().unwrap();
     static ref SHUTDOWN_NOTIFY: Arc<Notify> = Arc::new(Notify::new());
-    static ref SHUTDOWN_SIGNAL: (watch::Sender<bool>, watch::Receiver<bool>) = watch::channel(false);
 }
 
 /// DICOM C-STORE SCP
@@ -106,21 +105,13 @@ impl napi::Task for StoreSCPServer {
           std::process::exit(-2);
         });
       });
-      // shutdown on ctrl-c
-      tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("Shutting down...");
-            SHUTDOWN_NOTIFY.notify_waiters();
-            SHUTDOWN_SIGNAL.0.send(true).unwrap();
-        }
-        _ = SHUTDOWN_NOTIFY.notified() => {
-            info!("Received shutdown signal...");
-            SHUTDOWN_SIGNAL.0.send(true).unwrap();
-        }
-      }
 
-      server_task.await.unwrap();
+      // shutdown on ctrl-c or SIGINT/SIGTERM
+      shutdown_signal().await;
+
+      info!("Shutting down...");
       SHUTDOWN_NOTIFY.notify_waiters();
+      server_task.await.unwrap();
     });
 
     Ok(())
@@ -150,11 +141,11 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
       data: None,
   });
 
-  let mut shutdown_signal = SHUTDOWN_SIGNAL.1.clone();
+  let shutdown_notify = SHUTDOWN_NOTIFY.clone();
 
   loop {
       tokio::select! {
-          _ = shutdown_signal.changed() => {
+          _ = shutdown_notify.notified() => {
               info!("Shutting down run task...");
               break;
           }
@@ -176,10 +167,10 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                   out_dir: args.out_dir.clone(),
               };
 
-              let mut shutdown_signal = SHUTDOWN_SIGNAL.1.clone();
+              let shutdown_notify = SHUTDOWN_NOTIFY.clone();
               RUNTIME.spawn(async move {
                   tokio::select! {
-                      _ = shutdown_signal.changed() => {
+                      _ = shutdown_notify.notified() => {
                           info!("Shutting down connection task...");
                       }
                       result = run_store_async(socket, &args) => {
@@ -320,7 +311,6 @@ impl StoreSCP {
     pub fn close(&self) {
         info!("Initiating shutdown...");
         SHUTDOWN_NOTIFY.notify_waiters();
-        SHUTDOWN_SIGNAL.0.send(true).unwrap();
     }
 
     #[napi]
@@ -350,5 +340,25 @@ impl StoreSCP {
 
     fn emit_event(event: Event, data: EventData) {
         let _ = EVENT_CHANNEL.0.send((event, data));
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async { tokio::signal::ctrl_c().await.unwrap() };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .unwrap()
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
 }
