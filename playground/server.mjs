@@ -6,21 +6,34 @@ const server = new StoreScp({
     verbose: false
 })
 
-server.listen((event, msg)=>{
-    console.log(event, msg.message)
+function sendMessage(event, message) {
+  console.log(event, message)
+};
+
+server.listen((eventType, data) => {
+    sendMessage(eventType, data)
 })
 
+server.addEventListener('OnServerStarted',(error, event) => {
+  console.log('OnServerStarted', event)
+})
+
+server.addEventListener('OnFileStored',(error, event) => {
+  console.log('OnFileStored', JSON.parse(event.data))
+})
+
+
 console.log('DICOM server listening on port 4446');
+
 
 async function exitHandler(evtOrExitCodeOrError) {
     console.log('EXIT HANDLER', evtOrExitCodeOrError);
     try {
-      // await async code here
-      // Optionally: Handle evtOrExitCodeOrError here
+
     } catch (e) {
       console.error('EXIT HANDLER ERROR', e);
     }
-
+    console.log('EXIT HANDLER DONE');
     process.exit(isNaN(+evtOrExitCodeOrError) ? 1 : +evtOrExitCodeOrError);
 }
 

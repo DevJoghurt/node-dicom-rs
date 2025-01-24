@@ -12,26 +12,28 @@ crate-type = ["cdylib"]
 transcode = ["dep:dicom-pixeldata"]
 
 [dependencies]
-napi = { version = "2.16.11", default-features = false, features = ["napi4", "tokio_rt"] }
-napi-derive = "2.16.12"
+napi = { version = "3.0.0-alpha.27", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = { version = "3.0.0-alpha.25", features = ["type-def"] }
 clap = { version = "4.0.18", features = ["derive"] }
-dicom-dump = "=0.7.1"
-dicom-object = "=0.7.1"
-dicom-core = "0.7.1"
-dicom-ul = "0.7.1"
-dicom-encoding = "0.7.1"
-dicom-dictionary-std = "0.7.0"
-dicom-transfer-syntax-registry = "0.7.1"
-dicom-pixeldata = { version = "0.7.1", optional = true }
+dicom-dump = "=0.8.0"
+dicom-object = "=0.8.1"
+dicom-core = "0.8.1"
+dicom-ul = { version = "0.8.1", features = ["async"] }
+dicom-encoding = "0.8.1"
+dicom-dictionary-std = "0.8.0"
+dicom-transfer-syntax-registry = "0.8.1"
+dicom-pixeldata = { version = "0.8.1", optional = true }
 walkdir = "2.3.2"
 indicatif = "0.17.0"
 snafu = "0.8"
 tracing = "0.1.36"
+lazy_static = "1.5.0"
+serde_json = "1.0.1"
 tracing-subscriber = "0.3.15"
-tokio = { version = "1", features = ["default", "fs", "net"] }
+tokio = { version = "1.38.0", features = ["full"] }
 
 [build-dependencies]
-napi-build = "2.1.3"
+napi-build = "2"
 
 [profile.release]
 lto = true
