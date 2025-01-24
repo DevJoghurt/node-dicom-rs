@@ -327,8 +327,8 @@ impl StoreSCP {
                     }
                     result = receiver.recv() => {
                         if let Ok((evt, data)) = result {
-                            info!("Event received: {:?}", evt);
                             if evt == event {
+                                info!("Event received: {:?}", evt);
                                 handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                             }
                         }
