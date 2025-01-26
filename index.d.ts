@@ -22,7 +22,7 @@ export declare class DicomFile {
 export declare class StoreScp {
   constructor(options: StoreScpOptions)
   listen(): Promise<void>
-  close(): void
+  close(): Promise<void>
   addEventListener(event: Event, handler: ((err: Error | null, arg: EventData) => any)): void
 }
 export type StoreSCP = StoreScp

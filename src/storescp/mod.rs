@@ -106,14 +106,20 @@ impl napi::Task for StoreSCPServer {
         });
       });
 
-      // shutdown on ctrl-c or SIGINT/SIGTERM
-      shutdown_signal().await;
-
-      info!("Shutting down...");
-      SHUTDOWN_NOTIFY.notify_waiters();
-      server_task.await.unwrap();
+      tokio::select! {
+            _ = SHUTDOWN_NOTIFY.notified() => {
+                info!("Shutting down connection task...");
+                server_task.abort();
+            }
+            // shutdown on ctrl-c or SIGINT/SIGTERM
+            _ = async { shutdown_signal().await } => {
+                info!("Shutting down signal received...");
+                SHUTDOWN_NOTIFY.notify_waiters();
+                server_task.abort();
+            }
+        }
     });
-
+    info!("Server stopped");
     Ok(())
   }
 
@@ -308,9 +314,10 @@ impl StoreSCP {
     }
 
     #[napi]
-    pub fn close(&self) {
+    pub async fn close(&self) {
         info!("Initiating shutdown...");
         SHUTDOWN_NOTIFY.notify_waiters();
+        //RUNTIME.shutdown_timeout(std::time::Duration::from_secs(5));
     }
 
     #[napi]

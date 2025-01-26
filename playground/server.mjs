@@ -10,9 +10,7 @@ function sendMessage(event, message) {
   console.log(event, message)
 };
 
-server.listen((eventType, data) => {
-    sendMessage(eventType, data)
-})
+server.listen()
 
 server.addEventListener('OnServerStarted',(error, event) => {
   console.log('OnServerStarted', event)
@@ -25,11 +23,10 @@ server.addEventListener('OnFileStored',(error, event) => {
 
 console.log('DICOM server listening on port 4446');
 
-
 async function exitHandler(evtOrExitCodeOrError) {
     console.log('EXIT HANDLER', evtOrExitCodeOrError);
     try {
-
+      await server.close();
     } catch (e) {
       console.error('EXIT HANDLER ERROR', e);
     }
