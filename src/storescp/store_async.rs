@@ -192,105 +192,7 @@ pub async fn run_store_async(
                                     )?;
 
                                 // Extract additional metadata
-                                let patient_name_element = obj.element(tags::PATIENT_NAME).ok();
-                                let patient_id_element = obj.element(tags::PATIENT_ID).ok();
-                                let patient_birth_date_element = obj.element(tags::PATIENT_BIRTH_DATE).ok();
-                                let patient_sex_element = obj.element(tags::PATIENT_SEX).ok();
-                                let rows_element = obj.element(tags::ROWS).ok();
-                                let columns_element = obj.element(tags::COLUMNS).ok();
-                                let bits_allocated_element = obj.element(tags::BITS_ALLOCATED).ok();
-                                let bits_stored_element = obj.element(tags::BITS_STORED).ok();
-                                let high_bit_element = obj.element(tags::HIGH_BIT).ok();
-                                let pixel_representation_element = obj.element(tags::PIXEL_REPRESENTATION).ok();
-                                let photometric_interpretation_element = obj.element(tags::PHOTOMETRIC_INTERPRETATION).ok();
-                                let planar_configuration_element = obj.element(tags::PLANAR_CONFIGURATION).ok();
-                                let pixel_aspect_ratio_element = obj.element(tags::PIXEL_ASPECT_RATIO).ok();
-                                let pixel_spacing_element = obj.element(tags::PIXEL_SPACING).ok();
-                                let transfer_syntax_uid_element = obj.element(tags::TRANSFER_SYNTAX_UID).ok();
-                                let lossy_image_compression_element = obj.element(tags::LOSSY_IMAGE_COMPRESSION).ok();
-                                let study_id_element = obj.element(tags::STUDY_INSTANCE_UID).ok();
-                                let series_number_element = obj.element(tags::SERIES_NUMBER).ok();
-                                let instance_number_element = obj.element(tags::INSTANCE_NUMBER).ok();
-                                let modality_element = obj.element(tags::MODALITY).ok();
-                                let body_part_examined_element = obj.element(tags::BODY_PART_EXAMINED).ok();
-                                let protocol_name_element = obj.element(tags::PROTOCOL_NAME).ok();
-                                let contrast_bolus_agent_element = obj.element(tags::CONTRAST_BOLUS_AGENT).ok();
-
-                                clinical_data = serde_json::json!({
-                                    "patient_name": patient_name_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "patient_id": patient_id_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "patient_birth_date": patient_birth_date_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "patient_sex": patient_sex_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                });
-                                pixel_data_info = serde_json::json!({
-                                    "rows": rows_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "columns": columns_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "bits_allocated": bits_allocated_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "bits_stored": bits_stored_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "high_bit": high_bit_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "pixel_representation": pixel_representation_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "photometric_interpretation": photometric_interpretation_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "planar_configuration": planar_configuration_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "pixel_aspect_ratio": pixel_aspect_ratio_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "pixel_spacing": pixel_spacing_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "transfer_syntax_uid": transfer_syntax_uid_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "lossy_image_compression": lossy_image_compression_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                });
-                                procedure_info = serde_json::json!({
-                                    "study_id": study_id_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "series_number": series_number_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "instance_number": instance_number_element
-                                        .map(|e| e.to_int().unwrap_or(0))
-                                        .unwrap_or(0),
-                                    "modality": modality_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "body_part_examined": body_part_examined_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "protocol_name": protocol_name_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                    "contrast_bolus_agent": contrast_bolus_agent_element
-                                        .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-                                        .unwrap_or_default(),
-                                });
+                                (clinical_data, pixel_data_info, procedure_info) = extract_additional_metadata(&obj);
 
                                 // read important study and series instance UIDs for saving the file
                                 study_instance_uid = obj
@@ -419,6 +321,110 @@ pub async fn run_store_async(
     })))
 }
 
+fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let patient_name_element = obj.element(tags::PATIENT_NAME).ok();
+    let patient_id_element = obj.element(tags::PATIENT_ID).ok();
+    let patient_birth_date_element = obj.element(tags::PATIENT_BIRTH_DATE).ok();
+    let patient_sex_element = obj.element(tags::PATIENT_SEX).ok();
+    let rows_element = obj.element(tags::ROWS).ok();
+    let columns_element = obj.element(tags::COLUMNS).ok();
+    let bits_allocated_element = obj.element(tags::BITS_ALLOCATED).ok();
+    let bits_stored_element = obj.element(tags::BITS_STORED).ok();
+    let high_bit_element = obj.element(tags::HIGH_BIT).ok();
+    let pixel_representation_element = obj.element(tags::PIXEL_REPRESENTATION).ok();
+    let photometric_interpretation_element = obj.element(tags::PHOTOMETRIC_INTERPRETATION).ok();
+    let planar_configuration_element = obj.element(tags::PLANAR_CONFIGURATION).ok();
+    let pixel_aspect_ratio_element = obj.element(tags::PIXEL_ASPECT_RATIO).ok();
+    let pixel_spacing_element = obj.element(tags::PIXEL_SPACING).ok();
+    let transfer_syntax_uid_element = obj.element(tags::TRANSFER_SYNTAX_UID).ok();
+    let lossy_image_compression_element = obj.element(tags::LOSSY_IMAGE_COMPRESSION).ok();
+    let study_id_element = obj.element(tags::STUDY_INSTANCE_UID).ok();
+    let series_number_element = obj.element(tags::SERIES_NUMBER).ok();
+    let instance_number_element = obj.element(tags::INSTANCE_NUMBER).ok();
+    let modality_element = obj.element(tags::MODALITY).ok();
+    let body_part_examined_element = obj.element(tags::BODY_PART_EXAMINED).ok();
+    let protocol_name_element = obj.element(tags::PROTOCOL_NAME).ok();
+    let contrast_bolus_agent_element = obj.element(tags::CONTRAST_BOLUS_AGENT).ok();
+
+    let clinical_data = serde_json::json!({
+        "patient_name": patient_name_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "patient_id": patient_id_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "patient_birth_date": patient_birth_date_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "patient_sex": patient_sex_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+    });
+    let pixel_data_info = serde_json::json!({
+        "rows": rows_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "columns": columns_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "bits_allocated": bits_allocated_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "bits_stored": bits_stored_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "high_bit": high_bit_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "pixel_representation": pixel_representation_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "photometric_interpretation": photometric_interpretation_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "planar_configuration": planar_configuration_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "pixel_aspect_ratio": pixel_aspect_ratio_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "pixel_spacing": pixel_spacing_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "transfer_syntax_uid": transfer_syntax_uid_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "lossy_image_compression": lossy_image_compression_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+    });
+    let procedure_info = serde_json::json!({
+        "study_id": study_id_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "series_number": series_number_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "instance_number": instance_number_element
+            .map(|e| e.to_int().unwrap_or(0))
+            .unwrap_or(0),
+        "modality": modality_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "body_part_examined": body_part_examined_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "protocol_name": protocol_name_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        "contrast_bolus_agent": contrast_bolus_agent_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+    });
+
+    (clinical_data, pixel_data_info, procedure_info)
+}
+
 
 fn create_cstore_response(
     message_id: u16,
@@ -432,7 +438,7 @@ fn create_cstore_response(
             dicom_value!(Str, sop_class_uid),
         ),
         DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8001])),
-  
+
         DataElement::new(
             tags::MESSAGE_ID_BEING_RESPONDED_TO,
             VR::US,
@@ -444,7 +450,7 @@ fn create_cstore_response(
             dicom_value!(U16, [0x0101]),
         ),
         DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
-  
+
         DataElement::new(
             tags::AFFECTED_SOP_INSTANCE_UID,
             VR::UI,
@@ -452,7 +458,7 @@ fn create_cstore_response(
         ),
     ])
   }
-  
+
   fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
     InMemDicomObject::command_from_element_iter([
         DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8030])),
