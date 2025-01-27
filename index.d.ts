@@ -27,7 +27,8 @@ export type StoreSCP = StoreScp
 export declare class StoreScu {
   constructor(options: StoreScuOptions)
   addFile(path: string): void
-  send(): ResultObject
+  addFolder(path: string): void
+  send(): Promise<void>
 }
 export type StoreSCU = StoreScu
 
@@ -159,4 +160,6 @@ export interface StoreScuOptions {
   samlAssertion?: string
   /** User Identity JWT */
   jwt?: string
+  /** Dispatch these many service users to send files in parallel */
+  concurrency?: number
 }

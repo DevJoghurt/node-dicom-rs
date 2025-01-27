@@ -7,7 +7,7 @@ version = "0.0.1"
 crate-type = ["cdylib"]
 
 [features]
-# default = ["transcode"] /// enable if transcoding is desired
+default = ["transcode"]
 # support DICOM transcoding
 transcode = ["dep:dicom-pixeldata"]
 
@@ -22,7 +22,7 @@ dicom-ul = { version = "0.8.1", features = ["async"] }
 dicom-encoding = "0.8.1"
 dicom-dictionary-std = "0.8.0"
 dicom-transfer-syntax-registry = "0.8.1"
-dicom-pixeldata = { version = "0.8.1", optional = true }
+dicom-pixeldata = { version = "0.8.1", optional = true}
 walkdir = "2.3.2"
 indicatif = "0.17.0"
 snafu = "0.8"
