@@ -1,6 +1,6 @@
 use dicom_dictionary_std::tags;
 use dicom_core::{dicom_value, DataElement, VR};
-use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder,};
+use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder};
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_ul::{pdu::PDataValueType, Pdu};
@@ -13,7 +13,8 @@ use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
     args: &StoreSCP,
-) -> Result<(String, String, String, String, String, String, serde_json::Value), Whatever> {
+    on_file_stored: impl Fn(String, String, String, String, String, String, serde_json::Value) + Send + 'static,
+) -> Result<(), Whatever> {
     let StoreSCP {
         verbose,
         calling_ae_title,
@@ -230,6 +231,21 @@ pub async fn run_store_async(
                                 info!("Stored {}", file_path.display());
                                 file_path_str = file_path.display().to_string();
 
+                                // Emit the OnFileStored event
+                                on_file_stored(
+                                    sop_class_uid.clone(),
+                                    sop_instance_uid.clone(),
+                                    transfer_syntax_uid.clone(),
+                                    study_instance_uid.clone(),
+                                    series_instance_uid.clone(),
+                                    file_path_str.clone(),
+                                    serde_json::json!({
+                                        "clinical_data": clinical_data,
+                                        "pixel_data_info": pixel_data_info,
+                                        "procedure_info": procedure_info,
+                                    })
+                                );
+
                                 // send C-STORE-RSP object
                                 // commands are always in implicit VR LE
                                 let ts =
@@ -307,18 +323,7 @@ pub async fn run_store_async(
         info!("Dropping connection with {}", association.client_ae_title());
     }
 
-    Ok((
-        sop_class_uid,
-        sop_instance_uid,
-        transfer_syntax_uid,
-        study_instance_uid,
-        series_instance_uid,
-        file_path_str,
-        serde_json::json!({
-        "clinical_data": clinical_data,
-        "pixel_data_info": pixel_data_info,
-        "procedure_info": procedure_info,
-    })))
+    Ok(())
 }
 
 fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
@@ -425,12 +430,11 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
     (clinical_data, pixel_data_info, procedure_info)
 }
 
-
 fn create_cstore_response(
     message_id: u16,
     sop_class_uid: &str,
     sop_instance_uid: &str,
-  ) -> InMemDicomObject<StandardDataDictionary> {
+) -> InMemDicomObject<StandardDataDictionary> {
     InMemDicomObject::command_from_element_iter([
         DataElement::new(
             tags::AFFECTED_SOP_CLASS_UID,
@@ -457,9 +461,9 @@ fn create_cstore_response(
             dicom_value!(Str, sop_instance_uid),
         ),
     ])
-  }
+}
 
-  fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
+fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
     InMemDicomObject::command_from_element_iter([
         DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8030])),
         DataElement::new(
@@ -474,4 +478,4 @@ fn create_cstore_response(
         ),
         DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
     ])
-  }
+}

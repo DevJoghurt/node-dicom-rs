@@ -179,28 +179,27 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                       _ = shutdown_notify.notified() => {
                           info!("Shutting down connection task...");
                       }
-                      result = run_store_async(socket, &args) => {
+                      result = run_store_async(socket, &args, |sop_class_uid, sop_instance_uid, transfer_syntax_uid, study_instance_uid, series_instance_uid, file_path, additional_metadata| {
+                          let json_data = serde_json::json!({
+                              "sop_class_uid": sop_class_uid,
+                              "sop_instance_uid": sop_instance_uid,
+                              "study_instance_uid": study_instance_uid,
+                              "series_instance_uid": series_instance_uid,
+                              "transfer_syntax_uid": transfer_syntax_uid,
+                              "file_path": file_path,
+                              "metadata": additional_metadata
+                          });
+                          StoreSCP::emit_event(Event::OnFileStored, EventData {
+                              message: "File stored successfully".to_string(),
+                              data: Some(json_data.to_string()),
+                          });
+                      }) => {
                           if let Err(e) = result {
                               StoreSCP::emit_event(Event::OnError, EventData {
                                   message: "Error storing file".to_string(),
                                   data: Some(e.to_string()),
                               });
                               error!("{}", Report::from_error(e));
-                          } else {
-                              let (sop_class_uid, sop_instance_uid, transfer_syntax_uid, study_instance_uid, series_instance_uid, file_path, additional_metadata) = result.unwrap();
-                              let json_data = serde_json::json!({
-                                  "sop_class_uid": sop_class_uid,
-                                  "sop_instance_uid": sop_instance_uid,
-                                  "study_instance_uid": study_instance_uid,
-                                  "series_instance_uid": series_instance_uid,
-                                  "transfer_syntax_uid": transfer_syntax_uid,
-                                  "file_path": file_path,
-                                  "metadata": additional_metadata
-                              });
-                              StoreSCP::emit_event(Event::OnFileStored, EventData {
-                                  message: "File stored successfully".to_string(),
-                                  data: Some(json_data.to_string()),
-                              });
                           }
                       }
                   }
