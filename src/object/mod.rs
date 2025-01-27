@@ -16,12 +16,6 @@ enum Error {
     },
 }
 
-#[napi]
-pub struct DicomFile{
-    /// DICOM object
-    dicom_file: Option<DefaultDicomObject>,
-}
-
 #[napi(object)]
 pub struct DicomFileMeta {
     /// Storage SOP Class UID
@@ -72,6 +66,12 @@ pub struct DicomElements {
     pub series_number: Option<String>,
     /// Instance Number
     pub instance_number: Option<String>,
+}
+
+#[napi]
+pub struct DicomFile{
+    /// DICOM object
+    dicom_file: Option<DefaultDicomObject>,
 }
 
 #[napi]

@@ -365,7 +365,6 @@ if (!nativeBinding) {
 }
 
 module.exports.DicomFile = nativeBinding.DicomFile
-module.exports.DicomFile = nativeBinding.DicomFile
 module.exports.StoreScp = nativeBinding.StoreScp
 module.exports.StoreSCP = nativeBinding.StoreSCP
 module.exports.StoreScu = nativeBinding.StoreScu

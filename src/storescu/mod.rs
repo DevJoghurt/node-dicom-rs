@@ -32,9 +32,9 @@ pub struct StoreSCU {
     files: Vec<PathBuf>,
     /// verbose mode
     verbose: bool,
-    /// the C-STORE message ID [default: 1] 
+    /// the C-STORE message ID [default: 1]
     message_id: u16,
-    /// the calling Application Entity title, [default: STORE-SCU] 
+    /// the calling Application Entity title, [default: STORE-SCU]
     calling_ae_title: String,
     /// the called Application Entity title,
     /// overrides AE title in address if present [default: ANY-SCP]
@@ -57,8 +57,8 @@ pub struct StoreSCU {
     /// User Identity JWT
     jwt: Option<String>
 }
-#[napi]
-pub struct DicomFile {
+
+struct DicomFile {
     /// File path
     file: PathBuf,
     /// Storage SOP Class UID
@@ -119,7 +119,7 @@ pub struct StoreSCUOptions {
     pub verbose: Option<bool>,
     /// the C-STORE message ID
     pub message_id: Option<u16>,
-    /// the calling Application Entity title, [default: STORE-SCU] 
+    /// the calling Application Entity title, [default: STORE-SCU]
     pub calling_ae_title: Option<String>,
     /// the called Application Entity title,
     /// overrides AE title in address if present [default: ANY-SCP]
@@ -150,7 +150,7 @@ impl StoreSCU {
     pub fn new(options: StoreSCUOptions) -> Self {
         let files: Vec<PathBuf> = vec![];
         let mut verbose: bool = false;
-        if options.verbose.is_some() {  
+        if options.verbose.is_some() {
             verbose = options.verbose.unwrap();
         }
         let mut message_id: u16 = 1;
@@ -224,23 +224,23 @@ impl StoreSCU {
 
 
     fn store_scu_handler(&self) -> Result<ResultObject, Error> {
-        
+
         let verbose = self.verbose;
         let mut never_transcode = self.never_transcode;
         let max_pdu_length = self.max_pdu_length;
         let fail_first = self.fail_first;
 
-    
+
         // never transcode if the feature is disabled
         if cfg!(not(feature = "transcode")) {
             never_transcode = true;
         }
-    
+
 
         let mut checked_files: Vec<PathBuf> = vec![];
         let mut dicom_files: Vec<DicomFile> = vec![];
         let mut presentation_contexts = HashSet::new();
-    
+
         for file in &*self.files {
             if file.is_dir() {
                 for file in WalkDir::new(file.as_path())
@@ -254,19 +254,19 @@ impl StoreSCU {
                 checked_files.push(file.clone());
             }
         }
-    
+
         for file in checked_files {
             if verbose {
                 info!("Opening file '{}'...", file.display());
             }
-    
+
             match check_file(&file) {
                 Ok(dicom_file) => {
                     presentation_contexts.insert((
                         dicom_file.sop_class_uid.to_string(),
                         dicom_file.file_transfer_syntax.clone(),
                     ));
-    
+
                     // also accept uncompressed transfer syntaxes
                     // as mandated by the standard
                     // (though it might not always be able to fulfill this)
@@ -280,7 +280,7 @@ impl StoreSCU {
                             uids::IMPLICIT_VR_LITTLE_ENDIAN.to_string(),
                         ));
                     }
-    
+
                     dicom_files.push(dicom_file);
                 }
                 Err(_) => {
@@ -288,54 +288,54 @@ impl StoreSCU {
                 }
             }
         }
-    
+
         if dicom_files.is_empty() {
             error!("No supported files to transfer");
             std::process::exit(-1);
         }
-    
+
         if verbose {
             info!("[Info] Establishing association with '{}'...", self.addr);
         }
-    
+
         let mut scu_init = ClientAssociationOptions::new()
             .calling_ae_title(&self.calling_ae_title)
             .max_pdu_length(max_pdu_length);
-    
+
         for (storage_sop_class_uid, transfer_syntax) in &presentation_contexts {
             scu_init = scu_init.with_presentation_context(storage_sop_class_uid, vec![transfer_syntax]);
         }
-    
+
         if let Some(called_ae_title) = &self.called_ae_title {
             scu_init = scu_init.called_ae_title(called_ae_title);
         }
-    
+
         if let Some(username) = &self.username {
             scu_init = scu_init.username(username);
         }
-    
+
         if let Some(password) = &self.password {
             scu_init = scu_init.password(password);
         }
-    
+
         if let Some(kerberos_service_ticket) = &self.kerberos_service_ticket {
             scu_init = scu_init.kerberos_service_ticket(kerberos_service_ticket);
         }
-    
+
         if let Some(saml_assertion) = &self.saml_assertion {
             scu_init = scu_init.saml_assertion(saml_assertion);
         }
-    
+
         if let Some(jwt) = &self.jwt {
             scu_init = scu_init.jwt(jwt);
         }
-    
+
         let mut scu = scu_init.establish_with(&*self.addr).context(InitScuSnafu)?;
-    
+
         if verbose {
             info!("Association established");
         }
-    
+
         for file in &mut dicom_files {
             // identify the right transfer syntax to use
             let r: Result<_, Error> =
@@ -358,7 +358,7 @@ impl StoreSCU {
                 }
             }
         }
-    
+
         let progress_bar;
         if !verbose {
             progress_bar = Some(ProgressBar::new(dicom_files.len() as u64));
@@ -373,14 +373,14 @@ impl StoreSCU {
         } else {
             progress_bar = None;
         }
-    
+
         for file in dicom_files {
             if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
                 if let Some(pb) = &progress_bar {
                     pb.set_message(file.sop_instance_uid.clone());
                 }
                 let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, self.message_id);
-    
+
                 let mut cmd_data = Vec::with_capacity(128);
                 cmd.write_dataset_with_ts(
                     &mut cmd_data,
@@ -388,7 +388,7 @@ impl StoreSCU {
                 )
                 .map_err(Box::from)
                 .context(CreateCommandSnafu)?;
-    
+
                 let mut object_data = Vec::with_capacity(2048);
                 let dicom_file =
                     open_file(&file.file).whatever_context("Could not open listed DICOM file")?;
@@ -397,16 +397,16 @@ impl StoreSCU {
                     .with_context(|| UnsupportedFileTransferSyntaxSnafu {
                         uid: ts_uid_selected.to_string(),
                     })?;
-    
+
                 // transcode file if necessary
                 let dicom_file = into_ts(dicom_file, ts_selected, verbose)?;
-    
+
                 dicom_file
                     .write_dataset_with_ts(&mut object_data, ts_selected)
                     .whatever_context("Could not write object dataset")?;
-    
+
                 let nbytes = cmd_data.len() + object_data.len();
-    
+
                 if verbose {
                     info!(
                         "Sending file {} (~ {} kB), uid={}, sop={}, ts={}",
@@ -417,7 +417,7 @@ impl StoreSCU {
                         ts_uid_selected,
                     );
                 }
-    
+
                 if nbytes < scu.acceptor_max_pdu_length().saturating_sub(100) as usize {
                     let pdu = Pdu::PData {
                         data: vec![
@@ -435,7 +435,7 @@ impl StoreSCU {
                             },
                         ],
                     };
-    
+
                     scu.send(&pdu)
                         .whatever_context("Failed to send C-STORE-RQ")?;
                 } else {
@@ -447,10 +447,10 @@ impl StoreSCU {
                             data: cmd_data,
                         }],
                     };
-    
+
                     scu.send(&pdu)
                         .whatever_context("Failed to send C-STORE-RQ command")?;
-    
+
                     {
                         let mut pdata = scu.send_pdata(pc_selected.id);
                         pdata
@@ -458,19 +458,19 @@ impl StoreSCU {
                             .whatever_context("Failed to send C-STORE-RQ P-Data")?;
                     }
                 }
-    
+
                 if verbose {
                     info!("Awaiting response...");
                 }
-    
+
                 let rsp_pdu = scu
                     .receive()
                     .whatever_context("Failed to receive C-STORE-RSP")?;
-    
+
                 match rsp_pdu {
                     Pdu::PData { data } => {
                         let data_value = &data[0];
-    
+
                         let cmd_obj = InMemDicomObject::read_dataset_with_ts(
                             &data_value.data[..],
                             &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN
@@ -488,7 +488,7 @@ impl StoreSCU {
                         let storage_sop_instance_uid = file
                             .sop_instance_uid
                             .trim_end_matches(|c: char| c.is_whitespace() || c == '\0');
-    
+
                         match status {
                             // Success
                             0 => {
@@ -531,7 +531,7 @@ impl StoreSCU {
                             }
                         }
                     }
-    
+
                     pdu @ Pdu::Unknown { .. }
                     | pdu @ Pdu::AssociationRQ { .. }
                     | pdu @ Pdu::AssociationAC { .. }
@@ -549,11 +549,11 @@ impl StoreSCU {
                 pb.inc(1)
             };
         }
-    
+
         if let Some(pb) = progress_bar {
             pb.finish_with_message("done")
         };
-    
+
         scu.release()
             .whatever_context("Failed to release SCU association")?;
 

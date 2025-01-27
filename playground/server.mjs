@@ -1,14 +1,11 @@
 import { StoreScp } from '../index.js'
+import { platform } from 'node:os'
 
 const server = new StoreScp({
     port: 4446,
     outDir: './tmp/pacs',
     verbose: false
 })
-
-function sendMessage(event, message) {
-  console.log(event, message)
-};
 
 server.listen()
 
@@ -26,7 +23,9 @@ console.log('DICOM server listening on port 4446');
 async function exitHandler(evtOrExitCodeOrError) {
     console.log('EXIT HANDLER', evtOrExitCodeOrError);
     try {
-      await server.close();
+      if(platform() !== 'win32') {
+        await server.close();
+      }
     } catch (e) {
       console.error('EXIT HANDLER ERROR', e);
     }
