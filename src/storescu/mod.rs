@@ -125,79 +125,18 @@ enum Error {
 }
 
 #[napi(string_enum)]
+#[derive(Debug)]
 pub enum ResultStatus {
     Success,
     Error
 }
 
 #[napi(object)]
+#[derive(Debug)]
 pub struct ResultObject {
     /// Transfer Syntax UID
     pub status: ResultStatus,
     pub message: String
-}
-
-pub struct StoreSCUHandler  {
-    addr: String,
-    files: Vec<PathBuf>,
-    verbose: bool,
-    message_id: u16,
-    calling_ae_title: String,
-    called_ae_title: Option<String>,
-    max_pdu_length: u32,
-    fail_first: bool,
-    never_transcode: bool,
-    username: Option<String>,
-    password: Option<String>,
-    kerberos_service_ticket: Option<String>,
-    saml_assertion: Option<String>,
-    jwt: Option<String>,
-    concurrency: Option<u32>
-  }
-
-
-#[napi]
-impl napi::Task for StoreSCUHandler {
-  type JsValue = ();
-  type Output = ();
-
-  fn compute(&mut self) -> napi::bindgen_prelude::Result<()> {
-
-    let args = StoreSCU {
-        addr: self.addr.clone(),
-        files: self.files.clone(),
-        verbose: self.verbose,
-        message_id: self.message_id,
-        calling_ae_title: self.calling_ae_title.clone(),
-        called_ae_title: self.called_ae_title.clone(),
-        max_pdu_length: self.max_pdu_length,
-        fail_first: self.fail_first,
-        never_transcode: self.never_transcode,
-        username: self.username.clone(),
-        password: self.password.clone(),
-        kerberos_service_ticket: self.kerberos_service_ticket.clone(),
-        saml_assertion: self.saml_assertion.clone(),
-        jwt: self.jwt.clone(),
-        concurrency: self.concurrency
-    };
-
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async move {
-            run_async(args).await.unwrap_or_else(|e| {
-                error!("{}", Report::from_error(e));
-                std::process::exit(-2);
-            });
-        });
-
-    Ok(())
-  }
-
-  fn resolve(&mut self, _env: napi::Env, output: Self::Output) -> napi::bindgen_prelude::Result<Self::JsValue> {
-    Ok(output)
-  }
 }
 
 #[napi(object)]
@@ -336,14 +275,78 @@ impl StoreSCU {
             kerberos_service_ticket: self.kerberos_service_ticket.clone(),
             saml_assertion: self.saml_assertion.clone(),
             jwt: self.jwt.clone(),
-            concurrency: self.concurrency
-          })
+            concurrency: self.concurrency,
+        })
     }
-
-
 }
 
-async fn run_async(args: StoreSCU) -> Result<(), Error> {
+pub struct StoreSCUHandler {
+    addr: String,
+    files: Vec<PathBuf>,
+    verbose: bool,
+    message_id: u16,
+    calling_ae_title: String,
+    called_ae_title: Option<String>,
+    max_pdu_length: u32,
+    fail_first: bool,
+    never_transcode: bool,
+    username: Option<String>,
+    password: Option<String>,
+    kerberos_service_ticket: Option<String>,
+    saml_assertion: Option<String>,
+    jwt: Option<String>,
+    concurrency: Option<u32>,
+}
+
+#[napi]
+impl napi::Task for StoreSCUHandler {
+    type JsValue = Vec<ResultObject>;
+    type Output = Vec<ResultObject>;
+
+    fn compute(&mut self) -> napi::bindgen_prelude::Result<Self::Output> {
+        let args = StoreSCU {
+            addr: self.addr.clone(),
+            files: self.files.clone(),
+            verbose: self.verbose,
+            message_id: self.message_id,
+            calling_ae_title: self.calling_ae_title.clone(),
+            called_ae_title: self.called_ae_title.clone(),
+            max_pdu_length: self.max_pdu_length,
+            fail_first: self.fail_first,
+            never_transcode: self.never_transcode,
+            username: self.username.clone(),
+            password: self.password.clone(),
+            kerberos_service_ticket: self.kerberos_service_ticket.clone(),
+            saml_assertion: self.saml_assertion.clone(),
+            jwt: self.jwt.clone(),
+            concurrency: self.concurrency,
+        };
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            run_async(args).await.map_err(|e| {
+                napi::Error::new(
+                    napi::Status::GenericFailure,
+                    format!("Failed to send files: {}", e),
+                )
+            })
+        })
+    }
+
+    fn resolve(
+        &mut self,
+        _env: napi::Env,
+        output: Self::Output,
+    ) -> napi::bindgen_prelude::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
     use store_async::{get_scu, send_file};
     let StoreSCU {
         addr,
@@ -377,6 +380,7 @@ async fn run_async(args: StoreSCU) -> Result<(), Error> {
             .unwrap();
     let num_files = dicom_files.len();
     let dicom_files = Arc::new(Mutex::new(dicom_files));
+    let results = Arc::new(Mutex::new(Vec::new()));
     let mut tasks = tokio::task::JoinSet::new();
 
     let progress_bar;
@@ -407,6 +411,7 @@ async fn run_async(args: StoreSCU) -> Result<(), Error> {
         let password = password.clone();
         let called_ae_title = called_ae_title.clone();
         let calling_ae_title = calling_ae_title.clone();
+        let results = results.clone();
         tasks.spawn(async move {
             let mut scu = get_scu(
                 addr,
@@ -449,13 +454,18 @@ async fn run_async(args: StoreSCU) -> Result<(), Error> {
                     }
                     Err(e) => {
                         error!("{}", Report::from_error(e));
-                        if fail_first {
-                            let _ = scu.abort().await;
-                            std::process::exit(-2);
-                        }
+                        let mut results = results.lock().await;
+                        results.push(ResultObject {
+                            status: ResultStatus::Error,
+                            message: format!("Error sending file: {}", file.file.display()),
+                        });
+                        continue;
                     }
                 }
-                scu = send_file(scu, file, message_id, pbx.as_ref(), verbose, fail_first).await?;
+                let (new_scu, result) = send_file(scu, file, message_id, pbx.as_ref(), verbose, fail_first).await?;
+                scu = new_scu;
+                let mut results = results.lock().await;
+                results.push(result);
             }
             let _ = scu.release().await;
             Ok::<(), Error>(())
@@ -474,7 +484,8 @@ async fn run_async(args: StoreSCU) -> Result<(), Error> {
         pb.lock().await.finish_with_message("done")
     };
 
-    Ok(())
+    let results = Arc::try_unwrap(results).unwrap().into_inner();
+    Ok(results)
 }
 
 fn store_req_command(

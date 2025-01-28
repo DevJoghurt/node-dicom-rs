@@ -28,7 +28,7 @@ export declare class StoreScu {
   constructor(options: StoreScuOptions)
   addFile(path: string): void
   addFolder(path: string): void
-  send(): Promise<void>
+  send(): Promise<unknown>
 }
 export type StoreSCU = StoreScu
 
