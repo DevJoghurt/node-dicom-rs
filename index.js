@@ -68,7 +68,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-android-arm64')
+        return require('@nuxthealth/node-dicom-android-arm64')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -80,7 +80,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-android-arm-eabi')
+        return require('@nuxthealth/node-dicom-android-arm-eabi')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -96,7 +96,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-win32-x64-msvc')
+        return require('@nuxthealth/node-dicom-win32-x64-msvc')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -108,7 +108,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-win32-ia32-msvc')
+        return require('@nuxthealth/node-dicom-win32-ia32-msvc')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -120,7 +120,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-win32-arm64-msvc')
+        return require('@nuxthealth/node-dicom-win32-arm64-msvc')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -135,7 +135,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-darwin-universal')
+        return require('@nuxthealth/node-dicom-darwin-universal')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -147,7 +147,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-darwin-x64')
+        return require('@nuxthealth/node-dicom-darwin-x64')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -159,7 +159,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-darwin-arm64')
+        return require('@nuxthealth/node-dicom-darwin-arm64')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -175,7 +175,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-freebsd-x64')
+        return require('@nuxthealth/node-dicom-freebsd-x64')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -187,7 +187,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-freebsd-arm64')
+        return require('@nuxthealth/node-dicom-freebsd-arm64')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -204,7 +204,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-x64-musl')
+        return require('@nuxthealth/node-dicom-linux-x64-musl')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -216,7 +216,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-x64-gnu')
+        return require('@nuxthealth/node-dicom-linux-x64-gnu')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -230,7 +230,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-arm64-musl')
+        return require('@nuxthealth/node-dicom-linux-arm64-musl')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -242,7 +242,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-arm64-gnu')
+        return require('@nuxthealth/node-dicom-linux-arm64-gnu')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -256,7 +256,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-arm-musleabihf')
+        return require('@nuxthealth/node-dicom-linux-arm-musleabihf')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -268,7 +268,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-arm-gnueabihf')
+        return require('@nuxthealth/node-dicom-linux-arm-gnueabihf')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -282,7 +282,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-riscv64-musl')
+        return require('@nuxthealth/node-dicom-linux-riscv64-musl')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -294,7 +294,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-riscv64-gnu')
+        return require('@nuxthealth/node-dicom-linux-riscv64-gnu')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -307,7 +307,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-ppc64-gnu')
+        return require('@nuxthealth/node-dicom-linux-ppc64-gnu')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -319,7 +319,7 @@ function requireNative() {
         loadErrors.push(e)
       }
       try {
-        return require('@nhealth/node-dicom-linux-s390x-gnu')
+        return require('@nuxthealth/node-dicom-linux-s390x-gnu')
       } catch (e) {
         loadErrors.push(e)
       }
@@ -344,7 +344,7 @@ if (!nativeBinding || process.env.NAPI_RS_FORCE_WASI) {
   }
   if (!nativeBinding) {
     try {
-      nativeBinding = require('@nhealth/node-dicom-wasm32-wasi')
+      nativeBinding = require('@nuxthealth/node-dicom-wasm32-wasi')
     } catch (err) {
       if (process.env.NAPI_RS_FORCE_WASI) {
         loadErrors.push(err)
