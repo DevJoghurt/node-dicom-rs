@@ -31,13 +31,6 @@ pub async fn run_store_async(
     let mut msgid = 1;
     let mut sop_class_uid = "".to_string();
     let mut sop_instance_uid = "".to_string();
-    let mut study_instance_uid= "".to_string();
-    let mut series_instance_uid = "".to_string();
-    let mut transfer_syntax_uid = "".to_string();
-    let mut file_path_str = "".to_string();
-    let mut clinical_data = serde_json::json!({});
-    let mut pixel_data_info = serde_json::json!({});
-    let mut procedure_info = serde_json::json!({});
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
         .accept_any()
@@ -166,7 +159,7 @@ pub async fn run_store_async(
                                     .find(|pc| pc.id == data_value.presentation_context_id)
                                     .whatever_context("missing presentation context")?;
                                 let ts = &presentation_context.transfer_syntax;
-                                transfer_syntax_uid = ts.to_string();
+                                let transfer_syntax_uid = ts.to_string();
 
                                 let obj = InMemDicomObject::read_dataset_with_ts(
                                     instance_buffer.as_slice(),
@@ -193,10 +186,10 @@ pub async fn run_store_async(
                                     )?;
 
                                 // Extract additional metadata
-                                (clinical_data, pixel_data_info, procedure_info) = extract_additional_metadata(&obj);
+                                let (clinical_data, pixel_data_info, procedure_info) = extract_additional_metadata(&obj);
 
                                 // read important study and series instance UIDs for saving the file
-                                study_instance_uid = obj
+                                let study_instance_uid = obj
                                     .element(tags::STUDY_INSTANCE_UID)
                                     .whatever_context("missing STUDY INSTANCE UID")?
                                     .to_str()
@@ -204,7 +197,7 @@ pub async fn run_store_async(
                                         "could not retrieve Affected STUDY INSTANCE UID",
                                     )?
                                     .to_string();
-                                series_instance_uid = obj
+                                let series_instance_uid = obj
                                     .element(tags::SERIES_INSTANCE_UID)
                                     .whatever_context("missing SERIES INSTANCE UID")?
                                     .to_str()
@@ -229,7 +222,7 @@ pub async fn run_store_async(
                                     .write_to_file(&file_path)
                                     .whatever_context("could not save DICOM object to file")?;
                                 info!("Stored {}", file_path.display());
-                                file_path_str = file_path.display().to_string();
+                                let file_path_str = file_path.display().to_string();
 
                                 // Emit the OnFileStored event
                                 on_file_stored(

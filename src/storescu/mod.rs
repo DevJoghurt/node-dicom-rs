@@ -3,20 +3,14 @@ use dicom_core::{dicom_value, header::Tag, DataElement, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::transfer_syntax;
 use dicom_encoding::TransferSyntax;
-use dicom_object::{mem::InMemDicomObject, open_file, DefaultDicomObject, StandardDataDictionary};
+use dicom_object::{mem::InMemDicomObject, DefaultDicomObject, StandardDataDictionary};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use dicom_ul::{
-    association::ClientAssociationOptions,
-    pdu::{PDataValue, PDataValueType, Pdu},
-};
-use napi::JsError;
 use tracing::{debug, error, info, warn, Level};
 use indicatif::{ProgressBar, ProgressStyle};
 use snafu::prelude::*;
 use snafu::{Report, Whatever};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use transfer_syntax::TransferSyntaxIndex;
@@ -127,10 +121,7 @@ enum Error {
     ConvertField {
         tag: Tag,
         source: dicom_core::value::ConvertValueError,
-    },
-    WriteIO {
-        source: std::io::Error,
-    },
+    }
 }
 
 #[napi(string_enum)]
