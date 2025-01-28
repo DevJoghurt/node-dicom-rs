@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 use crate::storescu::{
     into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error,
     MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu,
-    UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
+    UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, ResultObject, ResultStatus,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -78,7 +78,7 @@ pub async fn send_file(
     progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
     verbose: bool,
     fail_first: bool,
-) -> Result<ClientAssociation<TcpStream>, Error> {
+) -> Result<(ClientAssociation<TcpStream>, ResultObject), Error> {
     if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
 
@@ -247,5 +247,11 @@ pub async fn send_file(
     if let Some(pb) = progress_bar.as_ref() {
         pb.lock().await.inc(1)
     };
-    Ok(scu)
+    Ok((
+        scu,
+        ResultObject {
+            status: ResultStatus::Success,
+            message: format!("Successfully sent file: {}", file.file.display()),
+        },
+    ))
 }
