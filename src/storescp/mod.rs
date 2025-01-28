@@ -7,7 +7,7 @@ use std::sync::Arc;
 use snafu::Report;
 use tracing::{error, info, Level};
 
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, Notify, Mutex};
 use tokio::runtime::Runtime;
 
 mod transfer;
@@ -50,6 +50,9 @@ pub struct StoreSCP {
     /// Which port to listen on
     // short, default_value = "11111"
     port: u16,
+    /// Study completion callback timeout
+    /// Default is 30 seconds
+    study_timeout: u32,
 }
 
 
@@ -59,7 +62,8 @@ pub enum Event {
     OnServerStarted,
     OnError,
     OnConnection,
-    OnFileStored
+    OnFileStored,
+    OnStudyCompleted
 }
 
 #[napi(object)]
@@ -70,14 +74,15 @@ pub struct EventData {
 }
 
 pub struct StoreSCPServer  {
-  verbose: bool,
-  calling_ae_title: String,
-  strict: bool,
-  uncompressed_only: bool,
-  promiscuous: bool,
-  max_pdu_length: u32,
-  out_dir: String,
-  port: u16
+    verbose: bool,
+    calling_ae_title: String,
+    strict: bool,
+    uncompressed_only: bool,
+    promiscuous: bool,
+    max_pdu_length: u32,
+    out_dir: String,
+    port: u16,
+    study_timeout: u32
 }
 
 #[napi]
@@ -95,7 +100,8 @@ impl napi::Task for StoreSCPServer {
       promiscuous: self.promiscuous,
       max_pdu_length: self.max_pdu_length,
       port: self.port,
-      out_dir: self.out_dir.clone()
+      out_dir: self.out_dir.clone(),
+      study_timeout: self.study_timeout
     };
 
     RUNTIME.block_on(async move {
@@ -171,6 +177,7 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                   max_pdu_length: args.max_pdu_length,
                   port: args.port,
                   out_dir: args.out_dir.clone(),
+                  study_timeout: args.study_timeout
               };
 
               let shutdown_notify = SHUTDOWN_NOTIFY.clone();
@@ -193,7 +200,13 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                               message: "File stored successfully".to_string(),
                               data: Some(json_data.to_string()),
                           });
-                      }) => {
+                      }, Arc::new(Mutex::new(|study_instance_uid, data| {
+                          let json_data = serde_json::json!(data);
+                          StoreSCP::emit_event(Event::OnStudyCompleted, EventData {
+                              message: "Study completed successfully".to_string(),
+                              data: Some(json_data.to_string()),
+                          });
+                      }))) => {
                           if let Err(e) = result {
                               StoreSCP::emit_event(Event::OnError, EventData {
                                   message: "Error storing file".to_string(),
@@ -237,6 +250,9 @@ pub struct StoreSCPOptions {
     /// Which port to listen on
     // short, default_value = "11111"
     pub port: u16,
+    /// Study completion callback timeout
+    /// Default is 30 seconds
+    pub study_timeout: Option<u32>,
 }
 
 #[napi]
@@ -285,6 +301,10 @@ impl StoreSCP {
         if options.max_pdu_length.is_some() {
             max_pdu_length = options.max_pdu_length.unwrap();
         }
+        let mut study_timeout: u32 = 30;
+        if options.study_timeout.is_some() {
+            study_timeout = options.study_timeout.unwrap();
+        }
         StoreSCP {
             verbose: verbose,
             calling_ae_title: calling_ae_title,
@@ -294,6 +314,7 @@ impl StoreSCP {
             max_pdu_length: max_pdu_length,
             port: options.port,
             out_dir: options.out_dir,
+            study_timeout: study_timeout,
         }
     }
 
@@ -308,7 +329,8 @@ impl StoreSCP {
           promiscuous: self.promiscuous,
           max_pdu_length: self.max_pdu_length,
           port: self.port,
-          out_dir: self.out_dir.clone()
+          out_dir: self.out_dir.clone(),
+          study_timeout: self.study_timeout
         })
     }
 

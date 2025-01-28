@@ -4,7 +4,8 @@ import { platform } from 'node:os'
 const server = new StoreScp({
     port: 4446,
     outDir: './tmp/pacs',
-    verbose: false
+    verbose: false,
+    studyTimeout: 40
 })
 
 server.listen()
@@ -14,9 +15,12 @@ server.addEventListener('OnServerStarted',(error, event) => {
 })
 
 server.addEventListener('OnFileStored',(error, event) => {
-  console.log('OnFileStored', JSON.parse(event.data))
+  //console.log('OnFileStored', JSON.parse(event.data))
 })
 
+server.addEventListener('OnStudyCompleted',(error, event) => {
+  console.log('OnStudyCompleted', JSON.parse(event.data))
+})
 
 console.log('DICOM server listening on port 4446');
 

@@ -7,13 +7,23 @@ use dicom_ul::{pdu::PDataValueType, Pdu};
 use snafu::{OptionExt, Report, ResultExt, Whatever};
 use std::path::PathBuf;
 use tracing::{debug, info, warn, error};
+use std::collections::HashMap;
+use tokio::sync::Mutex;
+use std::time::Duration;
+use tokio::time::sleep;
+use std::sync::Arc;
 
 use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
+
+lazy_static::lazy_static! {
+    static ref STUDY_STORE: Mutex<HashMap<String, Vec<serde_json::Value>>> = Mutex::new(HashMap::new());
+}
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
     args: &StoreSCP,
     on_file_stored: impl Fn(String, String, String, String, String, String, serde_json::Value) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(String, Vec<serde_json::Value>) + Send + 'static>>
 ) -> Result<(), Whatever> {
     let StoreSCP {
         verbose,
@@ -23,9 +33,12 @@ pub async fn run_store_async(
         promiscuous,
         max_pdu_length,
         out_dir,
-        port: _
+        port: _,
+        study_timeout: _
     } = args;
     let verbose = *verbose;
+
+    let study_timeout_duration = Duration::from_secs(args.study_timeout as u64); // Configurable timeout
 
     let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
     let mut msgid = 1;
@@ -238,6 +251,44 @@ pub async fn run_store_async(
                                         "procedure_info": procedure_info,
                                     })
                                 );
+
+                                // Update global store
+                                {
+                                    let mut store = STUDY_STORE.lock().await;
+                                    let entry = store.entry(study_instance_uid.clone()).or_insert_with(Vec::new);
+                                    if !entry.iter().any(|e| e["sop_instance_uid"] == sop_instance_uid) {
+                                        entry.push(serde_json::json!({
+                                            "sop_class_uid": sop_class_uid.clone(),
+                                            "sop_instance_uid": sop_instance_uid.clone(),
+                                            "transfer_syntax_uid": transfer_syntax_uid.clone(),
+                                            "study_instance_uid": study_instance_uid.clone(),
+                                            "series_instance_uid": series_instance_uid.clone(),
+                                            "file_path": file_path_str.clone(),
+                                            "metadata": serde_json::json!({
+                                                "clinical_data": clinical_data,
+                                                "pixel_data_info": pixel_data_info,
+                                                "procedure_info": procedure_info,
+                                            })
+                                        }));
+                                    }
+                                }
+
+                                // Ensure the sleep task is only created once for a study
+                                {
+                                    let store = STUDY_STORE.lock().await;
+                                    if store.get(&study_instance_uid).is_some() {
+                                        let study_instance_uid_clone = study_instance_uid.clone();
+                                        let on_study_completed_clone = Arc::clone(&on_study_completed);
+                                        tokio::spawn(async move {
+                                            sleep(study_timeout_duration).await;
+                                            let mut store = STUDY_STORE.lock().await;
+                                            if let Some(data) = store.remove(&study_instance_uid_clone) {
+                                                let on_study_completed = on_study_completed_clone.lock().await;
+                                                on_study_completed(study_instance_uid_clone, data);
+                                            }
+                                        });
+                                    }
+                                }
 
                                 // send C-STORE-RSP object
                                 // commands are always in implicit VR LE

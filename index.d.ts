@@ -86,7 +86,8 @@ export declare const enum Event {
   OnServerStarted = 'OnServerStarted',
   OnError = 'OnError',
   OnConnection = 'OnConnection',
-  OnFileStored = 'OnFileStored'
+  OnFileStored = 'OnFileStored',
+  OnStudyCompleted = 'OnStudyCompleted'
 }
 
 export interface EventData {
@@ -124,6 +125,11 @@ export interface StoreScpOptions {
   outDir: string
   /** Which port to listen on */
   port: number
+  /**
+   * Study completion callback timeout
+   * Default is 30 seconds
+   */
+  studyTimeout?: number
 }
 
 export interface StoreScuOptions {
