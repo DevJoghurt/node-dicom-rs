@@ -186,21 +186,12 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                       _ = shutdown_notify.notified() => {
                           info!("Shutting down connection task...");
                       }
-                      result = run_store_async(socket, &args, |sop_class_uid, sop_instance_uid, transfer_syntax_uid, study_instance_uid, series_instance_uid, file_path, additional_metadata| {
-                          let json_data = serde_json::json!({
-                              "sop_class_uid": sop_class_uid,
-                              "sop_instance_uid": sop_instance_uid,
-                              "study_instance_uid": study_instance_uid,
-                              "series_instance_uid": series_instance_uid,
-                              "transfer_syntax_uid": transfer_syntax_uid,
-                              "file_path": file_path,
-                              "metadata": additional_metadata
-                          });
+                      result = run_store_async(socket, &args, |data| {
                           StoreSCP::emit_event(Event::OnFileStored, EventData {
                               message: "File stored successfully".to_string(),
-                              data: Some(json_data.to_string()),
+                              data: Some(data.to_string()),
                           });
-                      }, Arc::new(Mutex::new(|study_instance_uid, data| {
+                      }, Arc::new(Mutex::new(|data| {
                           let json_data = serde_json::json!(data);
                           StoreSCP::emit_event(Event::OnStudyCompleted, EventData {
                               message: "Study completed successfully".to_string(),

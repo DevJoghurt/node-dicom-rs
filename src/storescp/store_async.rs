@@ -12,18 +12,90 @@ use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::time::sleep;
 use std::sync::Arc;
+use serde::Serialize;
 
 use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
 
+#[derive(Clone, Debug, Serialize)]
+struct ClinicalData {
+    patient_name: String,
+    patient_id: String,
+    patient_birth_date: String,
+    patient_sex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SeriesData {
+    series_number: i64,
+    modality: String,
+    body_part_examined: String,
+    protocol_name: String,
+    contrast_bolus_agent: String
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct InstanceData {
+    instance_number: i64,
+    instance_sop_class_uid: String,
+    rows: i64,
+    columns: i64,
+    bits_allocated: i64,
+    bits_stored: i64,
+    high_bit: i64,
+    pixel_representation: i64,
+    photometric_interpretation: String,
+    planar_configuration: i64,
+    pixel_aspect_ratio: String,
+    pixel_spacing: String,
+    lossy_image_compression: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Study {
+    study_instance_uid: String,
+    clinical_data: ClinicalData,
+    series: Vec<Series>,
+}
+
+
+#[derive(Clone, Debug, Serialize)]
+struct Series {
+    series_instance_uid: String,
+    series_number: i64,
+    body_part_examined: String,
+    protocol_name: String,
+    contrast_bolus_agent: String,
+    instances: Vec<Instance>,
+}
+
+
+#[derive(Clone, Debug, Serialize)]
+struct Instance {
+    sop_instance_uid: String,
+    instance_number: i64,
+    file_path: String,
+    rows: i64,
+    columns: i64,
+    bits_allocated: i64,
+    bits_stored: i64,
+    high_bit: i64,
+    pixel_representation: i64,
+    photometric_interpretation: String,
+    planar_configuration: i64,
+    pixel_aspect_ratio: String,
+    pixel_spacing: String,
+    lossy_image_compression: String,
+}
+
 lazy_static::lazy_static! {
-    static ref STUDY_STORE: Mutex<HashMap<String, Vec<serde_json::Value>>> = Mutex::new(HashMap::new());
+    static ref STUDY_STORE: Mutex<HashMap<String, Study>> = Mutex::new(HashMap::new());
 }
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
     args: &StoreSCP,
-    on_file_stored: impl Fn(String, String, String, String, String, String, serde_json::Value) + Send + 'static,
-    on_study_completed: Arc<Mutex<dyn Fn(String, Vec<serde_json::Value>) + Send + 'static>>
+    on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
 ) -> Result<(), Whatever> {
     let StoreSCP {
         verbose,
@@ -199,7 +271,7 @@ pub async fn run_store_async(
                                     )?;
 
                                 // Extract additional metadata
-                                let (clinical_data, pixel_data_info, procedure_info) = extract_additional_metadata(&obj);
+                                let (clinical_data, series_data, instance_data) = extract_additional_metadata(&obj);
 
                                 // read important study and series instance UIDs for saving the file
                                 let study_instance_uid = obj
@@ -239,37 +311,85 @@ pub async fn run_store_async(
 
                                 // Emit the OnFileStored event
                                 on_file_stored(
-                                    sop_class_uid.clone(),
-                                    sop_instance_uid.clone(),
-                                    transfer_syntax_uid.clone(),
-                                    study_instance_uid.clone(),
-                                    series_instance_uid.clone(),
-                                    file_path_str.clone(),
                                     serde_json::json!({
-                                        "clinical_data": clinical_data,
-                                        "pixel_data_info": pixel_data_info,
-                                        "procedure_info": procedure_info,
+                                        "sop_class-uid": sop_class_uid.clone(),
+                                        "sop_instance_uid": sop_instance_uid.clone(),
+                                        "transfer_syntax_uid": transfer_syntax_uid.clone(),
+                                        "study_instance_uid": study_instance_uid.clone(),
+                                        "series_instance_uid": series_instance_uid.clone(),
+                                        "series_number": series_data.series_number,
+                                        "instance": {
+                                            "sop_instance_uid": sop_instance_uid.clone(),
+                                            "instance_number": instance_data.instance_number,
+                                            "file_path": file_path_str.clone(),
+                                            "rows": instance_data.rows,
+                                            "columns": instance_data.columns,
+                                            "bits_allocated": instance_data.bits_allocated,
+                                            "bits_stored": instance_data.bits_stored,
+                                            "high_bit": instance_data.high_bit,
+                                            "pixel_representation": instance_data.pixel_representation,
+                                            "photometric_interpretation": instance_data.photometric_interpretation,
+                                            "planar_configuration": instance_data.planar_configuration,
+                                            "pixel_aspect_ratio": instance_data.pixel_aspect_ratio,
+                                            "pixel_spacing": instance_data.pixel_spacing,
+                                            "lossy_image_compression": instance_data.lossy_image_compression,
+                                        }
                                     })
                                 );
 
                                 // Update global store
                                 {
                                     let mut store = STUDY_STORE.lock().await;
-                                    let entry = store.entry(study_instance_uid.clone()).or_insert_with(Vec::new);
-                                    if !entry.iter().any(|e| e["sop_instance_uid"] == sop_instance_uid) {
-                                        entry.push(serde_json::json!({
-                                            "sop_class_uid": sop_class_uid.clone(),
-                                            "sop_instance_uid": sop_instance_uid.clone(),
-                                            "transfer_syntax_uid": transfer_syntax_uid.clone(),
-                                            "study_instance_uid": study_instance_uid.clone(),
-                                            "series_instance_uid": series_instance_uid.clone(),
-                                            "file_path": file_path_str.clone(),
-                                            "metadata": serde_json::json!({
-                                                "clinical_data": clinical_data,
-                                                "pixel_data_info": pixel_data_info,
-                                                "procedure_info": procedure_info,
-                                            })
-                                        }));
+                                    let study = store.entry(study_instance_uid.clone()).or_insert_with(|| Study {
+                                        study_instance_uid: study_instance_uid.clone(),
+                                        clinical_data: clinical_data.clone(),
+                                        series: Vec::new(),
+                                    });
+
+                                    let series = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
+                                    if let Some(series) = series {
+                                        if !series.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
+                                            series.instances.push(Instance {
+                                                sop_instance_uid: sop_instance_uid.clone(),
+                                                instance_number: instance_data.instance_number,
+                                                file_path: file_path_str.clone(),
+                                                rows: instance_data.rows,
+                                                columns: instance_data.columns,
+                                                bits_allocated: instance_data.bits_allocated,
+                                                bits_stored: instance_data.bits_stored,
+                                                high_bit: instance_data.high_bit,
+                                                pixel_representation: instance_data.pixel_representation,
+                                                photometric_interpretation: instance_data.photometric_interpretation,
+                                                planar_configuration: instance_data.planar_configuration,
+                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
+                                                pixel_spacing: instance_data.pixel_spacing,
+                                                lossy_image_compression: instance_data.lossy_image_compression
+                                            });
+                                        }
+                                    } else {
+                                        study.series.push(Series {
+                                            series_instance_uid: series_instance_uid.clone(),
+                                            series_number: series_data.series_number,
+                                            body_part_examined: series_data.body_part_examined,
+                                            protocol_name: series_data.protocol_name,
+                                            contrast_bolus_agent: series_data.contrast_bolus_agent,
+                                            instances: vec![Instance {
+                                                sop_instance_uid: sop_instance_uid.clone(),
+                                                instance_number: instance_data.instance_number,
+                                                file_path: file_path_str.clone(),
+                                                rows: instance_data.rows,
+                                                columns: instance_data.columns,
+                                                bits_allocated: instance_data.bits_allocated,
+                                                bits_stored: instance_data.bits_stored,
+                                                high_bit: instance_data.high_bit,
+                                                pixel_representation: instance_data.pixel_representation,
+                                                photometric_interpretation: instance_data.photometric_interpretation,
+                                                planar_configuration: instance_data.planar_configuration,
+                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
+                                                pixel_spacing: instance_data.pixel_spacing,
+                                                lossy_image_compression: instance_data.lossy_image_compression
+                                            }],
+                                        });
                                     }
                                 }
 
@@ -282,9 +402,10 @@ pub async fn run_store_async(
                                         tokio::spawn(async move {
                                             sleep(study_timeout_duration).await;
                                             let mut store = STUDY_STORE.lock().await;
-                                            if let Some(data) = store.remove(&study_instance_uid_clone) {
+                                            if let Some(study) = store.remove(&study_instance_uid_clone) {
                                                 let on_study_completed = on_study_completed_clone.lock().await;
-                                                on_study_completed(study_instance_uid_clone, data);
+                                                let study_data = serde_json::json!(study);
+                                                on_study_completed(study_data);
                                             }
                                         });
                                     }
@@ -370,7 +491,7 @@ pub async fn run_store_async(
     Ok(())
 }
 
-fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (ClinicalData, SeriesData, InstanceData) {
     let patient_name_element = obj.element(tags::PATIENT_NAME).ok();
     let patient_id_element = obj.element(tags::PATIENT_ID).ok();
     let patient_birth_date_element = obj.element(tags::PATIENT_BIRTH_DATE).ok();
@@ -385,9 +506,7 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
     let planar_configuration_element = obj.element(tags::PLANAR_CONFIGURATION).ok();
     let pixel_aspect_ratio_element = obj.element(tags::PIXEL_ASPECT_RATIO).ok();
     let pixel_spacing_element = obj.element(tags::PIXEL_SPACING).ok();
-    let transfer_syntax_uid_element = obj.element(tags::TRANSFER_SYNTAX_UID).ok();
     let lossy_image_compression_element = obj.element(tags::LOSSY_IMAGE_COMPRESSION).ok();
-    let study_id_element = obj.element(tags::STUDY_INSTANCE_UID).ok();
     let series_number_element = obj.element(tags::SERIES_NUMBER).ok();
     let instance_number_element = obj.element(tags::INSTANCE_NUMBER).ok();
     let modality_element = obj.element(tags::MODALITY).ok();
@@ -395,83 +514,65 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
     let protocol_name_element = obj.element(tags::PROTOCOL_NAME).ok();
     let contrast_bolus_agent_element = obj.element(tags::CONTRAST_BOLUS_AGENT).ok();
 
-    let clinical_data = serde_json::json!({
-        "patient_name": patient_name_element
+    let clinical_data = ClinicalData {
+        patient_name: patient_name_element
             .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
             .unwrap_or_default(),
-        "patient_id": patient_id_element
+        patient_id: patient_id_element
             .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
             .unwrap_or_default(),
-        "patient_birth_date": patient_birth_date_element
+        patient_birth_date: patient_birth_date_element
             .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
             .unwrap_or_default(),
-        "patient_sex": patient_sex_element
+        patient_sex: patient_sex_element
             .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
             .unwrap_or_default(),
-    });
-    let pixel_data_info = serde_json::json!({
-        "rows": rows_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "columns": columns_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "bits_allocated": bits_allocated_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "bits_stored": bits_stored_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "high_bit": high_bit_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "pixel_representation": pixel_representation_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "photometric_interpretation": photometric_interpretation_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "planar_configuration": planar_configuration_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "pixel_aspect_ratio": pixel_aspect_ratio_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "pixel_spacing": pixel_spacing_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "transfer_syntax_uid": transfer_syntax_uid_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "lossy_image_compression": lossy_image_compression_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-    });
-    let procedure_info = serde_json::json!({
-        "study_id": study_id_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "series_number": series_number_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "instance_number": instance_number_element
-            .map(|e| e.to_int().unwrap_or(0))
-            .unwrap_or(0),
-        "modality": modality_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "body_part_examined": body_part_examined_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "protocol_name": protocol_name_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        "contrast_bolus_agent": contrast_bolus_agent_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-    });
+    };
 
-    (clinical_data, pixel_data_info, procedure_info)
+     let instance_data = InstanceData {
+        instance_number: instance_number_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        instance_sop_class_uid: obj
+            .element(tags::SOP_CLASS_UID)
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        rows: rows_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        columns: columns_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        bits_allocated: bits_allocated_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        bits_stored: bits_stored_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        high_bit: high_bit_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        pixel_representation: pixel_representation_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        photometric_interpretation: photometric_interpretation_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        planar_configuration: planar_configuration_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        pixel_aspect_ratio: pixel_aspect_ratio_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        pixel_spacing: pixel_spacing_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        lossy_image_compression: lossy_image_compression_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+    };
+
+    let series_data = SeriesData {
+        series_number: series_number_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
+        modality: modality_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        body_part_examined: body_part_examined_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        protocol_name: protocol_name_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default(),
+        contrast_bolus_agent: contrast_bolus_agent_element
+            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
+            .unwrap_or_default()
+    };
+
+    (clinical_data, series_data, instance_data)
 }
 
 fn create_cstore_response(

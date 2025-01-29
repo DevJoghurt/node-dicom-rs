@@ -15,7 +15,7 @@ server.addEventListener('OnServerStarted',(error, event) => {
 })
 
 server.addEventListener('OnFileStored',(error, event) => {
-  //console.log('OnFileStored', JSON.parse(event.data))
+  console.log('OnFileStored', JSON.parse(event.data))
 })
 
 server.addEventListener('OnStudyCompleted',(error, event) => {
