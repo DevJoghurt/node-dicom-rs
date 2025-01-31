@@ -1,6 +1,6 @@
 import test from 'ava'
 
-import { DicomFile } from '../index'
+import { DicomFile } from './../index'
 
 test('read dicom file', (t) => {
   const file = new DicomFile();
