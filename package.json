@@ -23,10 +23,10 @@
     "index.js"
   ],
   "devDependencies": {
-    "@napi-rs/cli": "3.0.0-alpha.69",
+    "@napi-rs/cli": "3.0.0-alpha.70",
     "ava": "^6.2.0",
     "@swc-node/register": "^1.10.9",
-    "@swc/core": "^1.10.11",
+    "@swc/core": "^1.10.12",
     "typescript": "^5.7.3",
     "bumpp": "^10.0.1"
   },
@@ -63,6 +63,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com:DevJoghurt/node-dicom-rs.git"
+    "url": "git@github.com:DevJoghurt/node-dicom-rs.git"
   }
 }
