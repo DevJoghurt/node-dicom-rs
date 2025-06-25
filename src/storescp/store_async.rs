@@ -1,5 +1,5 @@
 use dicom_dictionary_std::tags;
-use dicom_core::{dicom_value, DataElement, VR};
+use dicom_core::{dicom_value, DataElement, VR, Tag};
 use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder};
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
@@ -491,85 +491,54 @@ pub async fn run_store_async(
     Ok(())
 }
 
-fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (ClinicalData, SeriesData, InstanceData) {
-    let patient_name_element = obj.element(tags::PATIENT_NAME).ok();
-    let patient_id_element = obj.element(tags::PATIENT_ID).ok();
-    let patient_birth_date_element = obj.element(tags::PATIENT_BIRTH_DATE).ok();
-    let patient_sex_element = obj.element(tags::PATIENT_SEX).ok();
-    let rows_element = obj.element(tags::ROWS).ok();
-    let columns_element = obj.element(tags::COLUMNS).ok();
-    let bits_allocated_element = obj.element(tags::BITS_ALLOCATED).ok();
-    let bits_stored_element = obj.element(tags::BITS_STORED).ok();
-    let high_bit_element = obj.element(tags::HIGH_BIT).ok();
-    let pixel_representation_element = obj.element(tags::PIXEL_REPRESENTATION).ok();
-    let photometric_interpretation_element = obj.element(tags::PHOTOMETRIC_INTERPRETATION).ok();
-    let planar_configuration_element = obj.element(tags::PLANAR_CONFIGURATION).ok();
-    let pixel_aspect_ratio_element = obj.element(tags::PIXEL_ASPECT_RATIO).ok();
-    let pixel_spacing_element = obj.element(tags::PIXEL_SPACING).ok();
-    let lossy_image_compression_element = obj.element(tags::LOSSY_IMAGE_COMPRESSION).ok();
-    let series_number_element = obj.element(tags::SERIES_NUMBER).ok();
-    let instance_number_element = obj.element(tags::INSTANCE_NUMBER).ok();
-    let modality_element = obj.element(tags::MODALITY).ok();
-    let body_part_examined_element = obj.element(tags::BODY_PART_EXAMINED).ok();
-    let protocol_name_element = obj.element(tags::PROTOCOL_NAME).ok();
-    let contrast_bolus_agent_element = obj.element(tags::CONTRAST_BOLUS_AGENT).ok();
+/**
+ * Helper functions to extract DICOM tags as strings or integers.
+ */
+fn get_str_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> String {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
 
+fn get_int_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> i64 {
+    obj.element(tag)
+        .ok()
+        .and_then(|e| e.to_int().ok())
+        .unwrap_or(0)
+}
+
+fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (ClinicalData, SeriesData, InstanceData) {
     let clinical_data = ClinicalData {
-        patient_name: patient_name_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        patient_id: patient_id_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        patient_birth_date: patient_birth_date_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        patient_sex: patient_sex_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
+        patient_name: get_str_tag(obj, tags::PATIENT_NAME),
+        patient_id: get_str_tag(obj, tags::PATIENT_ID),
+        patient_birth_date: get_str_tag(obj, tags::PATIENT_BIRTH_DATE),
+        patient_sex: get_str_tag(obj, tags::PATIENT_SEX),
     };
 
-     let instance_data = InstanceData {
-        instance_number: instance_number_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        instance_sop_class_uid: obj
-            .element(tags::SOP_CLASS_UID)
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        rows: rows_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        columns: columns_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        bits_allocated: bits_allocated_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        bits_stored: bits_stored_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        high_bit: high_bit_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        pixel_representation: pixel_representation_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        photometric_interpretation: photometric_interpretation_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        planar_configuration: planar_configuration_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        pixel_aspect_ratio: pixel_aspect_ratio_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        pixel_spacing: pixel_spacing_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        lossy_image_compression: lossy_image_compression_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
+    let instance_data = InstanceData {
+        instance_number: get_int_tag(obj, tags::INSTANCE_NUMBER),
+        instance_sop_class_uid: get_str_tag(obj, tags::SOP_CLASS_UID),
+        rows: get_int_tag(obj, tags::ROWS),
+        columns: get_int_tag(obj, tags::COLUMNS),
+        bits_allocated: get_int_tag(obj, tags::BITS_ALLOCATED),
+        bits_stored: get_int_tag(obj, tags::BITS_STORED),
+        high_bit: get_int_tag(obj, tags::HIGH_BIT),
+        pixel_representation: get_int_tag(obj, tags::PIXEL_REPRESENTATION),
+        photometric_interpretation: get_str_tag(obj, tags::PHOTOMETRIC_INTERPRETATION),
+        planar_configuration: get_int_tag(obj, tags::PLANAR_CONFIGURATION),
+        pixel_aspect_ratio: get_str_tag(obj, tags::PIXEL_ASPECT_RATIO),
+        pixel_spacing: get_str_tag(obj, tags::PIXEL_SPACING),
+        lossy_image_compression: get_str_tag(obj, tags::LOSSY_IMAGE_COMPRESSION),
     };
 
     let series_data = SeriesData {
-        series_number: series_number_element.map(|e| e.to_int().unwrap_or(0)).unwrap_or(0),
-        modality: modality_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        body_part_examined: body_part_examined_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        protocol_name: protocol_name_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default(),
-        contrast_bolus_agent: contrast_bolus_agent_element
-            .map(|e| e.to_str().unwrap_or_else(|_| std::borrow::Cow::Borrowed("")).to_string())
-            .unwrap_or_default()
+        series_number: get_int_tag(obj, tags::SERIES_NUMBER),
+        modality: get_str_tag(obj, tags::MODALITY),
+        body_part_examined: get_str_tag(obj, tags::BODY_PART_EXAMINED),
+        protocol_name: get_str_tag(obj, tags::PROTOCOL_NAME),
+        contrast_bolus_agent: get_str_tag(obj, tags::CONTRAST_BOLUS_AGENT),
     };
 
     (clinical_data, series_data, instance_data)

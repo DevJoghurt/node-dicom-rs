@@ -1,0 +1,11 @@
+services:
+  s3:
+    image: versity/versitygw:v1.0.14
+    container_name: versitygw
+    ports:
+      - "7070:7070"
+    environment:
+      - ROOT_ACCESS_KEY=user
+      - ROOT_SECRET_KEY=password
+    command: >
+      posix /tmp/vgw
