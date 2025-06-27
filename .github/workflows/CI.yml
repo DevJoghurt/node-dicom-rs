@@ -37,8 +37,6 @@ jobs:
             build: |
               sudo apt-get update &&
               sudo apt-get install pkg-config libssl-dev -y &&
-              ln -s /usr/include/x86_64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h &&
-              ln -s /usr/include/x86_64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h &&
               rustup install 1.87.0 &&
               rustup default 1.87.0 &&
               yarn build --target x86_64-unknown-linux-gnu
@@ -51,8 +49,6 @@ jobs:
             build: |
               sudo apt-get update &&
               sudo apt-get install g++-aarch64-linux-gnu pkg-config libssl-dev -y &&
-              ln -s /usr/include/aarch64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h &&
-              ln -s /usr/include/aarch64-linux-gnu/openssl/configuration.h /usr/include/openssl/configuration.h &&
               rustup install 1.87.0 &&
               rustup default 1.87.0 &&
               rustup target add aarch64-unknown-linux-gnu &&
