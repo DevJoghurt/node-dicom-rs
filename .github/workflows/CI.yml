@@ -38,7 +38,7 @@ jobs:
               set -e;
               rustup target add x86_64-unknown-linux-musl;
               apt update;
-              sudo apt-get install -y pkg-config perl;
+              sudo apt-get install -y pkg-config perl openssl libssl-dev;
               yarn build --target x86_64-unknown-linux-musl;
               strip *.node;
           - host: macos-latest
