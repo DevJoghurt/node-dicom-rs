@@ -34,25 +34,14 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: |
-              sudo apt-get update &&
-              sudo apt-get install pkg-config libssl-dev -y &&
-              rustup install 1.87.0 &&
-              rustup default 1.87.0 &&
-              yarn build --target x86_64-unknown-linux-gnu
+            build: yarn build --target x86_64-unknown-linux-gnu
           - host: macos-latest
             target: aarch64-apple-darwin
             build: yarn build --target aarch64-apple-darwin
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
-            build: |
-              sudo apt-get update &&
-              sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev:arm64 pkg-config -y &&
-              rustup install 1.87.0 &&
-              rustup default 1.87.0 &&
-              rustup target add aarch64-unknown-linux-gnu &&
-              yarn build --target aarch64-unknown-linux-gnu
+            build: yarn build --target aarch64-unknown-linux-gnu
     name: stable - ${{ matrix.settings.target }} - node@20
     runs-on: ${{ matrix.settings.host }}
     steps:
@@ -63,14 +52,6 @@ jobs:
         with:
           node-version: 20
           cache: yarn
-      - name: Install OpenSSL on Windows
-        if: runner.os == 'Windows'
-        run: choco install openssl -y
-      - name: Set OpenSSL Environment Vars
-        if: runner.os == 'Windows'
-        run: |
-            echo "OPENSSL_DIR=C:\Program Files\OpenSSL-Win64" >> $GITHUB_ENV
-            echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.settings.docker }}

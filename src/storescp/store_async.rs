@@ -33,7 +33,6 @@ struct Study {
     series: Vec<Series>,
 }
 
-
 #[derive(Clone, Debug, Serialize)]
 struct Series {
     series_instance_uid: String,
