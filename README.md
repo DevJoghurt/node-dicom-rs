@@ -1,6 +1,6 @@
 # node-dicom-rs
 
-Nodejs bindings for dicom-rs.
+Nodejs bindings for dicom-rs tools.
 
 ## Installation
 
