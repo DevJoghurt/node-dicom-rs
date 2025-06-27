@@ -37,6 +37,9 @@ jobs:
             build: |
               sudo apt-get update &&
               sudo apt-get install pkg-config libssl-dev -y &&
+              export OPENSSL_DIR=/usr &&
+              export OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu &&
+              export OPENSSL_INCLUDE_DIR=/usr/include &&
               ls -l /usr/include/openssl/opensslv.h &&
               rustup install 1.87.0 &&
               rustup default 1.87.0 &&
@@ -49,7 +52,11 @@ jobs:
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian-aarch64
             build: |
               sudo apt-get update &&
-              sudo apt-get install g++-aarch64-linux-gnu pkg-config libssl-dev -y &&
+              sudo apt-get install g++-aarch64-linux-gnu pkg-config libssl-dev libssl-dev:aarch64-linux-gnu -y || \
+                sudo apt-get install g++-aarch64-linux-gnu pkg-config libssl-dev -y &&
+              export OPENSSL_DIR=/usr/aarch64-linux-gnu &&
+              export OPENSSL_LIB_DIR=/usr/aarch64-linux-gnu/lib &&
+              export OPENSSL_INCLUDE_DIR=/usr/aarch64-linux-gnu/include &&
               rustup install 1.87.0 &&
               rustup default 1.87.0 &&
               rustup target add aarch64-unknown-linux-gnu &&
