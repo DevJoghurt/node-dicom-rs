@@ -13,8 +13,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use std::sync::Arc;
 use serde::Serialize;
+use async_trait::async_trait;
 
 use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
+use crate::storescp::s3_storage::{build_s3_client, s3_put_object};
 
 #[derive(Clone, Debug, Serialize)]
 struct ClinicalData {
@@ -106,7 +108,9 @@ pub async fn run_store_async(
         max_pdu_length,
         out_dir,
         port: _,
-        study_timeout: _
+        study_timeout: _,
+        storage_backend,
+        s3_config,
     } = args;
     let verbose = *verbose;
 
@@ -150,6 +154,18 @@ pub async fn run_store_async(
         "> Presentation contexts: {:?}",
         association.presentation_contexts()
     );
+
+    // --- Storage backend selection ---
+    let storage_backend: Box<dyn StorageBackend> = match storage_backend {
+        crate::storescp::StorageBackendType::Filesystem => {
+            Box::new(FilesystemBackend { out_dir: out_dir.clone().unwrap() })
+        },
+        crate::storescp::StorageBackendType::S3 => {
+            let config = s3_config.clone().expect("S3 config required for S3 backend");
+            let client = build_s3_client(&config);
+            Box::new(S3Backend { config, client })
+        },
+    };
 
     loop {
         match association.receive().await {
@@ -292,22 +308,32 @@ pub async fn run_store_async(
                                     .to_string();
 
                                 // write the files to the current directory with their SOPInstanceUID as filenames
-                                let mut file_path = PathBuf::from(out_dir);
+                                let mut file_path = PathBuf::from(out_dir.as_ref().expect("Output directory must be set"));
                                 file_path.push(study_instance_uid.to_string());
                                 file_path.push(series_instance_uid.to_string());
 
-                                std::fs::create_dir_all(&file_path).unwrap_or_else(|e| {
-                                    error!("Could not create directory: {}", e);
-                                    std::process::exit(-2);
-                                });
+                                if matches!(&args.storage_backend, crate::storescp::StorageBackendType::Filesystem) {
+                                    std::fs::create_dir_all(&file_path).unwrap_or_else(|e| {
+                                        error!("Could not create directory: {}", e);
+                                        std::process::exit(-2);
+                                    });
+                                }
 
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
                                 let file_obj = obj.with_exact_meta(file_meta);
-                                file_obj
-                                    .write_to_file(&file_path)
-                                    .whatever_context("could not save DICOM object to file")?;
-                                info!("Stored {}", file_path.display());
-                                let file_path_str = file_path.display().to_string();
+                                let mut dicom_bytes = Vec::new();
+                                file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                let storage_key = file_path.strip_prefix(std::path::Path::new(out_dir.as_ref().unwrap()))
+                                    .unwrap_or(&file_path)
+                                    .to_string_lossy()
+                                    .replace('\\', "/");
+                                storage_backend.store_file(&storage_key, &dicom_bytes).await.whatever_context("failed to store file")?;
+                                info!("Stored {}", storage_key);
+                                let file_path_str = match &args.storage_backend {
+                                    crate::storescp::StorageBackendType::Filesystem => file_path.display().to_string(),
+                                    crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
+                                };
+
 
                                 // Emit the OnFileStored event
                                 on_file_stored(
@@ -592,4 +618,46 @@ fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictio
         ),
         DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
     ])
+}
+
+// StorageBackend trait and implementations for Filesystem and S3
+#[async_trait]
+pub trait StorageBackend: Send + Sync {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>>;
+}
+
+pub struct FilesystemBackend {
+    pub out_dir: String,
+}
+
+#[async_trait]
+impl StorageBackend for FilesystemBackend {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let full_path = std::path::Path::new(&self.out_dir).join(path);
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(full_path, data)?;
+        Ok(())
+    }
+}
+
+pub struct S3Backend {
+    pub config: crate::storescp::S3Config,
+    pub client: minio::s3::client::Client,
+}
+
+#[async_trait]
+impl StorageBackend for S3Backend {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let bucket = &self.config.bucket;
+        let key = path.replace("\\", "/");
+        let client = self.client.clone();
+        let data = data.to_vec();
+        s3_put_object(&client, bucket, &key, &data).await.map_err(|e| {
+            error!("Failed to upload file to S3: {}", e);
+            Box::<dyn std::error::Error>::from(e)
+        })?;
+        Ok(())
+    }
 }
