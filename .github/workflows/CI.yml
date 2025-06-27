@@ -32,16 +32,13 @@ jobs:
             build: yarn build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
           - host: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
+            target: x86_64-unknown-linux-musl
+            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-musl
             build: |-
               set -e;
               apt update;
               sudo apt-get install -y pkg-config perl;
-              sudo apt-get install -y libssl-dev:x86_64-linux-gnu;
-              export OPENSSL_DIR="/usr/x86_64-unknown-linux-gnu";
-              export CXXFLAGS="-stdlib=libc++ -L/usr/lib/llvm-18/lib -static";
-              yarn build --target x86_64-unknown-linux-gnu;
+              yarn build --target x86_64-unknown-linux-musl;
               strip *.node;
           - host: macos-latest
             target: aarch64-apple-darwin
