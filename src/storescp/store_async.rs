@@ -27,32 +27,6 @@ struct ClinicalData {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct SeriesData {
-    series_number: i64,
-    modality: String,
-    body_part_examined: String,
-    protocol_name: String,
-    contrast_bolus_agent: String
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct InstanceData {
-    instance_number: i64,
-    instance_sop_class_uid: String,
-    rows: i64,
-    columns: i64,
-    bits_allocated: i64,
-    bits_stored: i64,
-    high_bit: i64,
-    pixel_representation: i64,
-    photometric_interpretation: String,
-    planar_configuration: i64,
-    pixel_aspect_ratio: String,
-    pixel_spacing: String,
-    lossy_image_compression: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 struct Study {
     study_instance_uid: String,
     clinical_data: ClinicalData,
@@ -286,9 +260,6 @@ pub async fn run_store_async(
                                         "failed to build DICOM meta file information",
                                     )?;
 
-                                // Extract additional metadata
-                                let (clinical_data, series_data, instance_data) = extract_additional_metadata(&obj);
-
                                 // read important study and series instance UIDs for saving the file
                                 let study_instance_uid = obj
                                     .element(tags::STUDY_INSTANCE_UID)
@@ -320,7 +291,8 @@ pub async fn run_store_async(
                                 }
 
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
-                                let file_obj = obj.with_exact_meta(file_meta);
+                                let obj_for_file = obj.clone();
+                                let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
                                 file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
                                 let storage_key = file_path.strip_prefix(std::path::Path::new(out_dir.as_ref().unwrap()))
@@ -334,6 +306,14 @@ pub async fn run_store_async(
                                     crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
                                 };
 
+                                // Extract additional metadata
+                                let (clinical_data, mut series, instance) = extract_additional_metadata(
+                                    &obj,
+                                    sop_instance_uid.clone(),
+                                    file_path_str.clone(),
+                                    series_instance_uid.clone(),
+                                );
+
 
                                 // Emit the OnFileStored event
                                 on_file_stored(
@@ -342,24 +322,9 @@ pub async fn run_store_async(
                                         "sop_instance_uid": sop_instance_uid.clone(),
                                         "transfer_syntax_uid": transfer_syntax_uid.clone(),
                                         "study_instance_uid": study_instance_uid.clone(),
-                                        "series_instance_uid": series_instance_uid.clone(),
-                                        "series_number": series_data.series_number,
-                                        "instance": {
-                                            "sop_instance_uid": sop_instance_uid.clone(),
-                                            "instance_number": instance_data.instance_number,
-                                            "file_path": file_path_str.clone(),
-                                            "rows": instance_data.rows,
-                                            "columns": instance_data.columns,
-                                            "bits_allocated": instance_data.bits_allocated,
-                                            "bits_stored": instance_data.bits_stored,
-                                            "high_bit": instance_data.high_bit,
-                                            "pixel_representation": instance_data.pixel_representation,
-                                            "photometric_interpretation": instance_data.photometric_interpretation,
-                                            "planar_configuration": instance_data.planar_configuration,
-                                            "pixel_aspect_ratio": instance_data.pixel_aspect_ratio,
-                                            "pixel_spacing": instance_data.pixel_spacing,
-                                            "lossy_image_compression": instance_data.lossy_image_compression,
-                                        }
+                                        "series_instance_uid": series.series_instance_uid,
+                                        "series_number": series.series_number,
+                                        "instance": instance
                                     })
                                 );
 
@@ -372,50 +337,14 @@ pub async fn run_store_async(
                                         series: Vec::new(),
                                     });
 
-                                    let series = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
-                                    if let Some(series) = series {
-                                        if !series.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
-                                            series.instances.push(Instance {
-                                                sop_instance_uid: sop_instance_uid.clone(),
-                                                instance_number: instance_data.instance_number,
-                                                file_path: file_path_str.clone(),
-                                                rows: instance_data.rows,
-                                                columns: instance_data.columns,
-                                                bits_allocated: instance_data.bits_allocated,
-                                                bits_stored: instance_data.bits_stored,
-                                                high_bit: instance_data.high_bit,
-                                                pixel_representation: instance_data.pixel_representation,
-                                                photometric_interpretation: instance_data.photometric_interpretation,
-                                                planar_configuration: instance_data.planar_configuration,
-                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
-                                                pixel_spacing: instance_data.pixel_spacing,
-                                                lossy_image_compression: instance_data.lossy_image_compression
-                                            });
+                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series.series_instance_uid);
+                                    if let Some(series_entry) = series_entry {
+                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == instance.sop_instance_uid) {
+                                            series_entry.instances.push(instance);
                                         }
                                     } else {
-                                        study.series.push(Series {
-                                            series_instance_uid: series_instance_uid.clone(),
-                                            series_number: series_data.series_number,
-                                            body_part_examined: series_data.body_part_examined,
-                                            protocol_name: series_data.protocol_name,
-                                            contrast_bolus_agent: series_data.contrast_bolus_agent,
-                                            instances: vec![Instance {
-                                                sop_instance_uid: sop_instance_uid.clone(),
-                                                instance_number: instance_data.instance_number,
-                                                file_path: file_path_str.clone(),
-                                                rows: instance_data.rows,
-                                                columns: instance_data.columns,
-                                                bits_allocated: instance_data.bits_allocated,
-                                                bits_stored: instance_data.bits_stored,
-                                                high_bit: instance_data.high_bit,
-                                                pixel_representation: instance_data.pixel_representation,
-                                                photometric_interpretation: instance_data.photometric_interpretation,
-                                                planar_configuration: instance_data.planar_configuration,
-                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
-                                                pixel_spacing: instance_data.pixel_spacing,
-                                                lossy_image_compression: instance_data.lossy_image_compression
-                                            }],
-                                        });
+                                        series.instances.push(instance);
+                                        study.series.push(series);
                                     }
                                 }
 
@@ -535,7 +464,12 @@ fn get_int_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> i64 
         .unwrap_or(0)
 }
 
-fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (ClinicalData, SeriesData, InstanceData) {
+fn extract_additional_metadata(
+    obj: &InMemDicomObject<StandardDataDictionary>,
+    sop_instance_uid: String,
+    file_path: String,
+    series_instance_uid: String,
+) -> (ClinicalData, Series, Instance) {
     let clinical_data = ClinicalData {
         patient_name: get_str_tag(obj, tags::PATIENT_NAME),
         patient_id: get_str_tag(obj, tags::PATIENT_ID),
@@ -543,9 +477,10 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
         patient_sex: get_str_tag(obj, tags::PATIENT_SEX),
     };
 
-    let instance_data = InstanceData {
+    let instance = Instance {
+        sop_instance_uid: sop_instance_uid.clone(),
         instance_number: get_int_tag(obj, tags::INSTANCE_NUMBER),
-        instance_sop_class_uid: get_str_tag(obj, tags::SOP_CLASS_UID),
+        file_path,
         rows: get_int_tag(obj, tags::ROWS),
         columns: get_int_tag(obj, tags::COLUMNS),
         bits_allocated: get_int_tag(obj, tags::BITS_ALLOCATED),
@@ -559,15 +494,16 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
         lossy_image_compression: get_str_tag(obj, tags::LOSSY_IMAGE_COMPRESSION),
     };
 
-    let series_data = SeriesData {
+    let series = Series {
+        series_instance_uid,
         series_number: get_int_tag(obj, tags::SERIES_NUMBER),
-        modality: get_str_tag(obj, tags::MODALITY),
         body_part_examined: get_str_tag(obj, tags::BODY_PART_EXAMINED),
         protocol_name: get_str_tag(obj, tags::PROTOCOL_NAME),
         contrast_bolus_agent: get_str_tag(obj, tags::CONTRAST_BOLUS_AGENT),
+        instances: vec![], // Will be filled later
     };
 
-    (clinical_data, series_data, instance_data)
+    (clinical_data, series, instance)
 }
 
 fn create_cstore_response(
