@@ -37,9 +37,9 @@ jobs:
             build: |-
               set -e;
               apt update;
-              sudo apt-get install -y pkg-config libssl-dev perl; # REF: https://github.com/napi-rs/napi-rs/issues/1359
-              export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu";
-              export OPENSSL_INCLUDE="/usr/include/openssl";
+              sudo apt-get install -y pkg-config perl;
+              sudo apt-get install -y libssl-dev:x86_64-linux-gnu;
+              export OPENSSL_DIR="/usr/x86_64-unknown-linux-gnu";
               export CXXFLAGS="-stdlib=libc++ -L/usr/lib/llvm-18/lib -static";
               yarn build --target x86_64-unknown-linux-gnu;
               strip *.node;
