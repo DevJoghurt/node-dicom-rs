@@ -46,6 +46,12 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
+      - name: Build
+        run: ${{ matrix.settings.build }}
+        if: ${{ !matrix.settings.docker }}
+        shell: bash
+        env:
+          CXXFLAGS: ${{ matrix.settings.host == 'ubuntu-latest' && '-stdlib=libc++ -L/usr/lib/llvm-18/lib -static' || '' }}
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
