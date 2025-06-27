@@ -34,7 +34,15 @@ jobs:
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-debian
-            build: yarn build --target x86_64-unknown-linux-gnu
+            build: |-
+              set -e;
+              apt update;
+              sudo apt-get install -y pkg-config libssl-dev perl; # REF: https://github.com/napi-rs/napi-rs/issues/1359
+              export OPENSSL_LIB_DIR="/usr/lib/x86_64-linux-gnu";
+              export OPENSSL_INCLUDE="/usr/include/openssl";
+              export CXXFLAGS="-stdlib=libc++ -L/usr/lib/llvm-18/lib -static";
+              yarn build --target x86_64-unknown-linux-gnu;
+              strip *.node;
           - host: macos-latest
             target: aarch64-apple-darwin
             build: yarn build --target aarch64-apple-darwin
@@ -46,15 +54,6 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install OpenSSL
-        if: ${{ matrix.settings.host == 'ubuntu-latest' && !matrix.settings.docker }}
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - name: Build
-        run: ${{ matrix.settings.build }}
-        if: ${{ matrix.settings.host == 'ubuntu-latest' && !matrix.settings.docker }}
-        shell: bash
-        env:
-          CXXFLAGS: ${{ matrix.settings.host == 'ubuntu-latest' && '-stdlib=libc++ -L/usr/lib/llvm-18/lib -static' || '' }}
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
