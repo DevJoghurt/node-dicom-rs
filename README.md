@@ -37,6 +37,55 @@ receiver.addEventListener('OnFileStored', (eventData) => {
 receiver.listen();
 ```
 
+#### Events
+
+The `StoreSCP` class emits the following events that you can listen to:
+
+- **OnServerStarted**: Triggered when the StoreSCP server has started and is listening for connections.
+
+- **OnFileStored**: Triggered when a DICOM file has been successfully received and stored.
+    - **Event data**: An object containing information about the stored file, such as the file path and metadata.
+
+- **OnStudyCompleted**: Triggered when all files for a study have been received and the study is considered complete.
+    - **Event data**: An object containing information about the stored study, such as series, instances and metadata.
+
+You can add event listeners using the `addEventListener` method:
+
+```javascript
+receiver.addEventListener('OnFileStored', (eventData) => {
+        console.log('File stored:', eventData);
+});
+
+receiver.addEventListener('OnStudyCompleted', (eventData) => {
+        console.error('Full study stored:', eventData);
+});
+```
+
+
+
+#### Storage Backends
+The `StoreSCP` class supports multiple storage backends for received DICOM files. Currently, the following backends are available:
+
+- **Filesystem** (default): Stores files on the local disk.
+- **S3**: Stores files in an Amazon S3 bucket.
+
+You can specify the backend using the `storage_backend` option when creating a `StoreSCP` instance. For example:
+
+```javascript
+const receiver = new StoreSCP({
+    storageBackend: 'S3', // default: Filesystem
+    s3Config: {
+        bucket: 'your-s3-bucket-name',
+        access_key_id: 'your-access-key-id',
+        secret_access_key: 'your-secret-access-key',
+        endpoint: 'http://localhost:7070'
+    },
+    // ...other options
+});
+```
+
+If no `storage_backend` is specified, files are stored on the local filesystem by default.
+
 ### Sending DICOM files
 
 To send DICOM files using the `StoreScu` class, you can use the following example:
