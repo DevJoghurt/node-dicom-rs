@@ -14,7 +14,7 @@ mod transfer;
 mod store_async;
 mod s3_storage;
 use store_async::run_store_async;
-use s3_storage::{build_s3_client, check_s3_connectivity};
+use s3_storage::{build_s3_bucket, check_s3_connectivity};
 
 type EventSender = broadcast::Sender<(Event, EventData)>;
 type EventReceiver = broadcast::Receiver<(Event, EventData)>;
@@ -365,10 +365,9 @@ impl StoreSCP {
             }
             // S3 connectivity check at server startup
             let config = s3_config.clone();
-            let bucket = config.bucket.clone();
             RUNTIME.block_on(async move {
-                let client = build_s3_client(&config);
-                check_s3_connectivity(&client, &bucket).await;
+                let bucket = build_s3_bucket(&config);
+                check_s3_connectivity(&bucket).await;
             });
         } else {
             info!("Using Filesystem storage backend");

@@ -16,7 +16,7 @@ use serde::Serialize;
 use async_trait::async_trait;
 
 use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
-use crate::storescp::s3_storage::{build_s3_client, s3_put_object};
+use crate::storescp::s3_storage::{build_s3_bucket, s3_put_object};
 
 #[derive(Clone, Debug, Serialize)]
 struct ClinicalData {
@@ -135,8 +135,8 @@ pub async fn run_store_async(
         },
         crate::storescp::StorageBackendType::S3 => {
             let config = s3_config.clone().expect("S3 config required for S3 backend");
-            let client = build_s3_client(&config);
-            Box::new(S3Backend { config, client })
+            let bucket = build_s3_bucket(&config);
+            Box::new(S3Backend { bucket })
         },
     };
 
@@ -578,18 +578,16 @@ impl StorageBackend for FilesystemBackend {
 }
 
 pub struct S3Backend {
-    pub config: crate::storescp::S3Config,
-    pub client: minio::s3::client::Client,
+    pub bucket: s3::bucket::Bucket,
 }
 
 #[async_trait]
 impl StorageBackend for S3Backend {
     async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let bucket = &self.config.bucket;
         let key = path.replace("\\", "/");
-        let client = self.client.clone();
+        let bucket = self.bucket.clone();
         let data = data.to_vec();
-        s3_put_object(&client, bucket, &key, &data).await.map_err(|e| {
+        s3_put_object(&bucket, &key, &data).await.map_err(|e| {
             error!("Failed to upload file to S3: {}", e);
             Box::<dyn std::error::Error>::from(e)
         })?;
