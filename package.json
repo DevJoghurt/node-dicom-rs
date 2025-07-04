@@ -64,6 +64,5 @@
   "repository": {
     "type": "git",
     "url": "git@github.com:DevJoghurt/node-dicom-rs.git"
-  },
-  "packageManager": "pnpm@10.2.0"
+  }
 }
