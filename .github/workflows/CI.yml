@@ -1,3 +1,4 @@
+# https://github.com/inaiat/kafka-crab-js/blob/main/.github/workflows/CI.yml
 name: CI
 env:
   DEBUG: napi:*
@@ -19,6 +20,9 @@ permissions:
       - .editorconfig
       - docs/**
   pull_request: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     strategy:
@@ -31,27 +35,30 @@ jobs:
           - host: windows-latest
             build: yarn build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
-          - host: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: yarn build --target x86_64-unknown-linux-gnu;
+          - host: ubuntu-22.04 # Need to fix test GLIB 2.35
+            target: x86_64-unknown-linux-gnu
+            build: pnpm build --target x86_64-unknown-linux-gnu
           - host: macos-latest
             target: aarch64-apple-darwin
             build: yarn build --target aarch64-apple-darwin
-          - host: ubuntu-latest
+          - host: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            docker: ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine
-            build: yarn build --target aarch64-unknown-linux-gnu
-    name: stable - ${{ matrix.settings.target }} - node@20
+            build: pnpm build --target aarch64-unknown-linux-gnu
+    name: stable - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
+    container: ${{ matrix.settings.container_image || '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: setup pnpm
+        uses: pnpm/action-setup@v4
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
         with:
-          node-version: 20
+          node-version: 22
           cache: yarn
+      - name: Clean rustup toolchain
+        run: rustup toolchain uninstall stable || true
       - name: Install
         uses: dtolnay/rust-toolchain@stable
         if: ${{ !matrix.settings.docker }}
@@ -86,7 +93,7 @@ jobs:
         uses: actions/setup-node@v4
         if: matrix.settings.target == 'i686-pc-windows-msvc'
         with:
-          node-version: 20
+          node-version: 22
           cache: yarn
           architecture: x86
       - name: Build in docker
