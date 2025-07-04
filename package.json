@@ -70,6 +70,5 @@
   "repository": {
     "type": "git",
     "url": "git@github.com:DevJoghurt/node-dicom-rs.git"
-  },
-  "packageManager": "yarn@4.9.2"
+  }
 }
