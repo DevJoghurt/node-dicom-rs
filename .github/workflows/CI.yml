@@ -31,30 +31,32 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: yarn build --target x86_64-apple-darwin
+            build: pnpm build --target x86_64-apple-darwin
           - host: windows-latest
-            build: yarn build --target x86_64-pc-windows-msvc
+            build: pnpm build --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
           - host: ubuntu-22.04 # Need to fix test GLIB 2.35
             target: x86_64-unknown-linux-gnu
-            build: yarn build --target x86_64-unknown-linux-gnu
+            build: pnpm build --target x86_64-unknown-linux-gnu
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: yarn build --target aarch64-apple-darwin
+            build: pnpm build --target aarch64-apple-darwin
           - host: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            build: yarn build --target aarch64-unknown-linux-gnu
+            build: pnpm build --target aarch64-unknown-linux-gnu
     name: stable - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
     container: ${{ matrix.settings.container_image || '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: setup pnpm
+        uses: pnpm/action-setup@v4
       - name: Setup node
         uses: actions/setup-node@v4
         if: ${{ !matrix.settings.docker }}
         with:
           node-version: 22
-          cache: yarn
+          cache: pnpm
       - name: Clean rustup toolchain
         run: rustup toolchain uninstall stable || true
       - name: Install
@@ -79,16 +81,16 @@ jobs:
         shell: bash
       - name: Setup node x86
         if: matrix.settings.target == 'i686-pc-windows-msvc'
-        run: yarn config set supportedArchitectures.cpu "ia32"
+        run: pnpm config set supportedArchitectures.cpu "ia32"
         shell: bash
       - name: Install dependencies
-        run: yarn install
+        run: pnpm install
       - name: Setup node x86
         uses: actions/setup-node@v4
         if: matrix.settings.target == 'i686-pc-windows-msvc'
         with:
           node-version: 22
-          cache: yarn
+          cache: pnpm
           architecture: x86
       - name: Build in docker
         uses: addnab/docker-run-action@v3
@@ -129,14 +131,16 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     steps:
       - uses: actions/checkout@v4
+      - name: setup pnpm
+        uses: pnpm/action-setup@v4
       - name: Setup node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
+          cache: pnpm
           architecture: ${{ matrix.settings.architecture }}
       - name: Install dependencies
-        run: yarn install
+        run: pnpm install
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -145,8 +149,8 @@ jobs:
       - name: List packages
         run: ls -R .
         shell: bash
-      #- name: Test bindings
-      #  run: yarn test
+      - name: Test bindings
+        run: pnpm test
   test-linux-binding:
     name: Test ${{ matrix.target }} - node@${{ matrix.node }}
     needs:
@@ -163,13 +167,35 @@ jobs:
     runs-on: ${{ contains(matrix.target, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
+      - name: setup pnpm
+        uses: pnpm/action-setup@v4
       - name: Setup node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: yarn
+          cache: pnpm
+      - name: Output docker params
+        id: docker
+        run: |
+          node -e "
+            if ('${{ matrix.target }}'.startsWith('aarch64')) {
+              console.log('PLATFORM=linux/arm64')
+            } else if ('${{ matrix.target }}'.startsWith('armv7')) {
+              console.log('PLATFORM=linux/arm/v7')
+            } else {
+              console.log('PLATFORM=linux/amd64')
+            }
+          " >> $GITHUB_OUTPUT
+          node -e "
+            if ('${{ matrix.target }}'.endsWith('-musl')) {
+              console.log('IMAGE=node:${{ matrix.node }}-alpine')
+            } else {
+              console.log('IMAGE=node:${{ matrix.node }}-slim')
+            }
+          " >> $GITHUB_OUTPUT
+          echo "PNPM_STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
       - name: Install dependencies
-        run: yarn install
+        run: pnpm install --force
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -179,7 +205,11 @@ jobs:
         run: ls -R .
         shell: bash
       - name: Test bindings
-        run: docker run --rm -v $(pwd):/build -w /build node:${{ matrix.node }}-slim yarn test
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ steps.docker.outputs.IMAGE }}
+          options: -v ${{ steps.docker.outputs.PNPM_STORE_PATH }}:${{ steps.docker.outputs.PNPM_STORE_PATH }} -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} --platform ${{ steps.docker.outputs.PLATFORM }}
+          run: npm run test
   publish:
     name: Publish
     runs-on: ubuntu-latest
@@ -192,15 +222,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
+          cache: pnpm
       - name: Install dependencies
-        run: yarn install
+        run: pnpm install
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
       - name: Move artifacts
-        run: yarn artifacts
+        run: pnpm artifacts
       - name: List packages
         run: ls -R ./npm
         shell: bash
