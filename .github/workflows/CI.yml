@@ -201,6 +201,8 @@ jobs:
         with:
           name: bindings-${{ matrix.target }}
           path: .
+      - name: Update npm
+        run:  npm install -g npm@11.4.2
       - name: List packages
         run: ls -R .
         shell: bash
