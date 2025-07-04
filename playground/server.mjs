@@ -3,7 +3,13 @@ import { platform } from 'node:os'
 
 const server = new StoreScp({
     port: 4446,
-    outDir: './tmp/pacs',
+    storageBackend: 'S3',
+    s3Config: {
+        accessKey: 'user',
+        secretKey: 'password',
+        bucket: 'dicom',
+        endpoint: 'http://localhost:7070'
+    },
     verbose: false,
     studyTimeout: 40
 })
@@ -19,7 +25,8 @@ server.addEventListener('OnFileStored',(error, event) => {
 })
 
 server.addEventListener('OnStudyCompleted',(error, event) => {
-  console.log('OnStudyCompleted', JSON.parse(event.data))
+  const data = JSON.parse(event.data)
+  console.log('OnStudyCompleted', data)
 })
 
 console.log('DICOM server listening on port 4446');

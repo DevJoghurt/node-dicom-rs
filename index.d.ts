@@ -106,7 +106,20 @@ export declare const enum ResultStatus {
   Error = 'Error'
 }
 
+export interface S3Config {
+  bucket: string
+  accessKey: string
+  secretKey: string
+  endpoint?: string
+}
+
 export declare function saveRawPixelData(filePath: string, outPath: string): string
+
+/** Storage backend type */
+export declare const enum StorageBackendType {
+  Filesystem = 'Filesystem',
+  S3 = 'S3'
+}
 
 export interface StoreScpOptions {
   /** Verbose mode */
@@ -121,8 +134,6 @@ export interface StoreScpOptions {
   promiscuous?: boolean
   /** Maximum PDU length */
   maxPduLength?: number
-  /** Output directory for incoming objects */
-  outDir: string
   /** Which port to listen on */
   port: number
   /**
@@ -130,6 +141,12 @@ export interface StoreScpOptions {
    * Default is 30 seconds
    */
   studyTimeout?: number
+  /** Storage backend type */
+  storageBackend?: StorageBackendType
+  /** S3 configuration if using S3 as storage backend */
+  s3Config?: S3Config
+  /** Output directory for incoming objects using Filesystem storage backend */
+  outDir?: string
 }
 
 export interface StoreScuOptions {

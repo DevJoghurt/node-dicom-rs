@@ -384,3 +384,4 @@ module.exports.StoreSCU = nativeBinding.StoreSCU
 module.exports.Event = nativeBinding.Event
 module.exports.ResultStatus = nativeBinding.ResultStatus
 module.exports.saveRawPixelData = nativeBinding.saveRawPixelData
+module.exports.StorageBackendType = nativeBinding.StorageBackendType

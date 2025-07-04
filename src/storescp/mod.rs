@@ -12,7 +12,9 @@ use tokio::runtime::Runtime;
 
 mod transfer;
 mod store_async;
+mod s3_storage;
 use store_async::run_store_async;
+use s3_storage::{build_s3_bucket, check_s3_connectivity};
 
 type EventSender = broadcast::Sender<(Event, EventData)>;
 type EventReceiver = broadcast::Receiver<(Event, EventData)>;
@@ -21,6 +23,23 @@ lazy_static::lazy_static! {
     static ref EVENT_CHANNEL: (EventSender, EventReceiver) = broadcast::channel(100);
     static ref RUNTIME: Runtime = Runtime::new().unwrap();
     static ref SHUTDOWN_NOTIFY: Arc<Notify> = Arc::new(Notify::new());
+}
+
+/// Storage backend type
+#[napi(string_enum)]
+#[derive(Debug, Clone)]
+pub enum StorageBackendType {
+    Filesystem,
+    S3,
+}
+
+#[derive(Debug, Clone)]
+#[napi(object)]
+pub struct S3Config {
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub endpoint: Option<String>,
 }
 
 /// DICOM C-STORE SCP
@@ -44,15 +63,20 @@ pub struct StoreSCP {
     /// Maximum PDU length
     // short = 'm', long = "max-pdu-length", default_value = "16384"
     max_pdu_length: u32,
-    /// Output directory for incoming objects
-    // short = 'o', default_value = "."
-    out_dir: String,
     /// Which port to listen on
     // short, default_value = "11111"
     port: u16,
     /// Study completion callback timeout
     /// Default is 30 seconds
     study_timeout: u32,
+    /// Storage backend type
+    // long = "storage-backend", default_value = "Filesystem"
+    storage_backend: StorageBackendType,
+    /// S3 configuration if using S3 as storage backend
+    s3_config: Option<S3Config>,
+    /// Output directory for incoming objects using Filesystem storage backend
+    // short = 'o', default_value = "."
+    out_dir: Option<String>,
 }
 
 
@@ -82,7 +106,9 @@ pub struct StoreSCPServer  {
     max_pdu_length: u32,
     out_dir: String,
     port: u16,
-    study_timeout: u32
+    study_timeout: u32,
+    storage_backend: StorageBackendType,
+    s3_config: Option<S3Config>,
 }
 
 #[napi]
@@ -100,8 +126,10 @@ impl napi::Task for StoreSCPServer {
       promiscuous: self.promiscuous,
       max_pdu_length: self.max_pdu_length,
       port: self.port,
-      out_dir: self.out_dir.clone(),
-      study_timeout: self.study_timeout
+      out_dir: Some(self.out_dir.clone()),
+      study_timeout: self.study_timeout,
+      storage_backend: self.storage_backend.clone(),
+      s3_config: self.s3_config.clone(),
     };
 
     RUNTIME.block_on(async move {
@@ -136,7 +164,7 @@ impl napi::Task for StoreSCPServer {
 
 async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
 
-  std::fs::create_dir_all(&args.out_dir).unwrap_or_else(|e| {
+  std::fs::create_dir_all(args.out_dir.as_deref().unwrap_or(".")).unwrap_or_else(|e| {
       error!("Could not create output directory: {}", e);
       std::process::exit(-2);
   });
@@ -177,7 +205,9 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                   max_pdu_length: args.max_pdu_length,
                   port: args.port,
                   out_dir: args.out_dir.clone(),
-                  study_timeout: args.study_timeout
+                  study_timeout: args.study_timeout,
+                  storage_backend: args.storage_backend.clone(),
+                  s3_config: args.s3_config.clone(),
               };
 
               let shutdown_notify = SHUTDOWN_NOTIFY.clone();
@@ -235,15 +265,21 @@ pub struct StoreSCPOptions {
     /// Maximum PDU length
     // short = 'm', long = "max-pdu-length", default_value = "16384"
     pub max_pdu_length: Option<u32>,
-    /// Output directory for incoming objects
-    // short = 'o', default_value = "."
-    pub out_dir: String,
     /// Which port to listen on
     // short, default_value = "11111"
     pub port: u16,
     /// Study completion callback timeout
     /// Default is 30 seconds
     pub study_timeout: Option<u32>,
+    /// Storage backend type
+    // long = "storage-backend", default_value = "Filesystem"
+    pub storage_backend: Option<StorageBackendType>,
+    /// S3 configuration if using S3 as storage backend
+    // long = "s3-config"
+    pub s3_config: Option<S3Config>,
+    /// Output directory for incoming objects using Filesystem storage backend
+    // short = 'o', default_value = "."
+    pub out_dir: Option<String>,
 }
 
 #[napi]
@@ -296,6 +332,8 @@ impl StoreSCP {
         if options.study_timeout.is_some() {
             study_timeout = options.study_timeout.unwrap();
         }
+        let storage_backend = options.storage_backend.unwrap_or(StorageBackendType::Filesystem);
+        let s3_config = options.s3_config;
         StoreSCP {
             verbose: verbose,
             calling_ae_title: calling_ae_title,
@@ -306,12 +344,34 @@ impl StoreSCP {
             port: options.port,
             out_dir: options.out_dir,
             study_timeout: study_timeout,
+            storage_backend,
+            s3_config,
         }
     }
 
     #[napi]
     pub fn listen(&self) -> AsyncTask<StoreSCPServer> {
         info!("Starting server...");
+        // add debugging info for storage backend
+        info!("Storage backend: {:?}", self.storage_backend);
+        if let Some(ref s3_config) = self.s3_config {
+            //log the bucket name and region and endpoint for S3 config
+            info!("Using S3 storage backend");
+            info!("S3 Bucket: {}", s3_config.bucket);
+            if let Some(ref endpoint) = s3_config.endpoint {
+                info!("S3 Endpoint: {}", endpoint);
+            } else {
+                info!("S3 Endpoint: Not specified");
+            }
+            // S3 connectivity check at server startup
+            let config = s3_config.clone();
+            RUNTIME.block_on(async move {
+                let bucket = build_s3_bucket(&config);
+                check_s3_connectivity(&bucket).await;
+            });
+        } else {
+            info!("Using Filesystem storage backend");
+        }
         AsyncTask::new(StoreSCPServer {
           verbose: self.verbose,
           calling_ae_title: self.calling_ae_title.clone(),
@@ -320,8 +380,10 @@ impl StoreSCP {
           promiscuous: self.promiscuous,
           max_pdu_length: self.max_pdu_length,
           port: self.port,
-          out_dir: self.out_dir.clone(),
-          study_timeout: self.study_timeout
+          out_dir: self.out_dir.clone().unwrap_or_else(|| ".".to_string()),
+          study_timeout: self.study_timeout,
+          storage_backend: self.storage_backend.clone(),
+          s3_config: self.s3_config.clone(),
         })
     }
 
