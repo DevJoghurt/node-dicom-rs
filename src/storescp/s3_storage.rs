@@ -1,4 +1,4 @@
-use s3::bucket::Bucket;
+use s3::{Bucket};
 use s3::creds::Credentials;
 use s3::Region;
 use crate::storescp::S3Config;
@@ -17,9 +17,10 @@ pub fn build_s3_bucket(config: &S3Config) -> Bucket {
         None,
         None,
     ).expect("Invalid S3 credentials");
+
     *Bucket::new(&config.bucket, region, credentials)
-        .expect("Failed to create S3 bucket")
-        .with_path_style()
+            .expect("Failed to create S3 bucket")
+            .with_path_style()
 }
 
 pub async fn check_s3_connectivity(bucket: &Bucket) {

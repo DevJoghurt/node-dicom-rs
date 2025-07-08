@@ -1,5 +1,5 @@
 services:
-  s3:
+  s3-versitygw:
     image: versity/versitygw:v1.0.14
     container_name: versitygw
     ports:
@@ -9,3 +9,17 @@ services:
       - ROOT_SECRET_KEY=password
     command: >
       posix /tmp/vgw
+  #s3-rustfs:
+  #  image: rustfs/rustfs:latest
+  #  container_name: rustfs
+  #  environment:
+  #    - RUSTFS_VOLUMES=/data/rustfs{0...3}
+  #    - RUSTFS_ADDRESS=:7070
+  #    - RUSTFS_CONSOLE_ENABLE=true
+  #    - RUSTFS_CONSOLE_ADDRESS=:7071
+  #    - RUSTFS_ROOT_USER=user
+  #    - RUSTFS_ROOT_PASSWORD=password
+  #    - RUSTFS_OBS_CONFIG=/etc/default/obs.toml
+  #  ports:
+  #    - "7070:7070"
+  #    - "7071:7071"
