@@ -167,7 +167,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: yarn
-          architecture: ${{ matrix.settings.architecture }}
       - name: Output docker params
         id: docker
         run: |
