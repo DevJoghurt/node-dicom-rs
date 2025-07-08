@@ -12,8 +12,8 @@ permissions:
   push:
     branches:
       - main
-    tags-ignore:
-      - '**'
+    tags:
+      - 'v*'
     paths-ignore:
       - '**/*.md'
       - LICENSE
@@ -21,8 +21,6 @@ permissions:
       - .editorconfig
       - docs/**
   pull_request: null
-  tags:
-    - 'v*'
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
