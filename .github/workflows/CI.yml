@@ -183,7 +183,7 @@ jobs:
         run: |
           yarn config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
           yarn config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
-          yarn install
+          yarn install --force
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
