@@ -5,17 +5,14 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "name": "node-dicom",
-    "triples": {
-      "binaryName": "node-dicom",
-      "additional": [
-        "aarch64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-apple-darwin",
-        "x86_64-pc-windows-msvc",
-        "x86_64-unknown-linux-gnu"
-      ]
-    }
+    "binaryName": "node-dicom",
+    "targets": [
+      "aarch64-apple-darwin",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu"
+    ]
   },
   "license": "MIT",
   "files": [
@@ -23,12 +20,21 @@
     "index.js"
   ],
   "devDependencies": {
-    "@napi-rs/cli": "3.0.0-alpha.91",
+    "@emnapi/core": "^1.4.3",
+    "@emnapi/runtime": "^1.4.3",
+    "@napi-rs/cli": "^3.0.0-alpha.91",
+    "@oxc-node/core": "^0.0.29",
+    "@taplo/cli": "^0.7.0",
+    "@tybys/wasm-util": "^0.9.0",
     "ava": "^6.4.0",
-    "@swc-node/register": "^1.10.10",
-    "@swc/core": "^1.12.6",
-    "typescript": "^5.8.3",
-    "bumpp": "^10.2.0"
+    "chalk": "^5.4.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "npm-run-all2": "^8.0.4",
+    "oxlint": "^1.5.0",
+    "prettier": "^3.6.0",
+    "tinybench": "^4.0.1",
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
@@ -39,7 +45,7 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --release --platform --strip",
+    "build": "napi build --release --platform",
     "build:debug": "napi build --platform",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
@@ -54,15 +60,16 @@
     "timeout": "2m",
     "workerThreads": false,
     "environmentVariables": {
-      "TS_NODE_PROJECT": "./tsconfig.json"
+      "OXC_TSCONFIG_PATH": "./__test__/tsconfig.json"
     },
     "nodeArguments": [
       "--import",
-      "@swc-node/register/esm-register"
+      "@oxc-node/core/register"
     ]
   },
   "repository": {
     "type": "git",
     "url": "git@github.com:DevJoghurt/node-dicom-rs.git"
-  }
+  },
+  "packageManager": "yarn@4.9.2"
 }
