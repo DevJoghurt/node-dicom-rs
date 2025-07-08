@@ -13,8 +13,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use std::sync::Arc;
 use serde::Serialize;
+use async_trait::async_trait;
 
 use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
+use crate::storescp::s3_storage::{build_s3_bucket, s3_put_object};
 
 #[derive(Clone, Debug, Serialize)]
 struct ClinicalData {
@@ -25,38 +27,11 @@ struct ClinicalData {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct SeriesData {
-    series_number: i64,
-    modality: String,
-    body_part_examined: String,
-    protocol_name: String,
-    contrast_bolus_agent: String
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct InstanceData {
-    instance_number: i64,
-    instance_sop_class_uid: String,
-    rows: i64,
-    columns: i64,
-    bits_allocated: i64,
-    bits_stored: i64,
-    high_bit: i64,
-    pixel_representation: i64,
-    photometric_interpretation: String,
-    planar_configuration: i64,
-    pixel_aspect_ratio: String,
-    pixel_spacing: String,
-    lossy_image_compression: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 struct Study {
     study_instance_uid: String,
     clinical_data: ClinicalData,
     series: Vec<Series>,
 }
-
 
 #[derive(Clone, Debug, Serialize)]
 struct Series {
@@ -106,7 +81,9 @@ pub async fn run_store_async(
         max_pdu_length,
         out_dir,
         port: _,
-        study_timeout: _
+        study_timeout: _,
+        storage_backend,
+        s3_config,
     } = args;
     let verbose = *verbose;
 
@@ -150,6 +127,18 @@ pub async fn run_store_async(
         "> Presentation contexts: {:?}",
         association.presentation_contexts()
     );
+
+    // --- Storage backend selection ---
+    let storage_backend: Box<dyn StorageBackend> = match storage_backend {
+        crate::storescp::StorageBackendType::Filesystem => {
+            Box::new(FilesystemBackend { out_dir: out_dir.clone().unwrap() })
+        },
+        crate::storescp::StorageBackendType::S3 => {
+            let config = s3_config.clone().expect("S3 config required for S3 backend");
+            let bucket = build_s3_bucket(&config);
+            Box::new(S3Backend { bucket })
+        },
+    };
 
     loop {
         match association.receive().await {
@@ -270,9 +259,6 @@ pub async fn run_store_async(
                                         "failed to build DICOM meta file information",
                                     )?;
 
-                                // Extract additional metadata
-                                let (clinical_data, series_data, instance_data) = extract_additional_metadata(&obj);
-
                                 // read important study and series instance UIDs for saving the file
                                 let study_instance_uid = obj
                                     .element(tags::STUDY_INSTANCE_UID)
@@ -292,22 +278,41 @@ pub async fn run_store_async(
                                     .to_string();
 
                                 // write the files to the current directory with their SOPInstanceUID as filenames
-                                let mut file_path = PathBuf::from(out_dir);
+                                let mut file_path = PathBuf::from(out_dir.as_ref().expect("Output directory must be set"));
                                 file_path.push(study_instance_uid.to_string());
                                 file_path.push(series_instance_uid.to_string());
 
-                                std::fs::create_dir_all(&file_path).unwrap_or_else(|e| {
-                                    error!("Could not create directory: {}", e);
-                                    std::process::exit(-2);
-                                });
+                                if matches!(&args.storage_backend, crate::storescp::StorageBackendType::Filesystem) {
+                                    std::fs::create_dir_all(&file_path).unwrap_or_else(|e| {
+                                        error!("Could not create directory: {}", e);
+                                        std::process::exit(-2);
+                                    });
+                                }
 
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
-                                let file_obj = obj.with_exact_meta(file_meta);
-                                file_obj
-                                    .write_to_file(&file_path)
-                                    .whatever_context("could not save DICOM object to file")?;
-                                info!("Stored {}", file_path.display());
-                                let file_path_str = file_path.display().to_string();
+                                let obj_for_file = obj.clone();
+                                let file_obj = obj_for_file.with_exact_meta(file_meta);
+                                let mut dicom_bytes = Vec::new();
+                                file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                let storage_key = file_path.strip_prefix(std::path::Path::new(out_dir.as_ref().unwrap()))
+                                    .unwrap_or(&file_path)
+                                    .to_string_lossy()
+                                    .replace('\\', "/");
+                                storage_backend.store_file(&storage_key, &dicom_bytes).await.whatever_context("failed to store file")?;
+                                info!("Stored {}", storage_key);
+                                let file_path_str = match &args.storage_backend {
+                                    crate::storescp::StorageBackendType::Filesystem => file_path.display().to_string(),
+                                    crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
+                                };
+
+                                // Extract additional metadata
+                                let (clinical_data, mut series, instance) = extract_additional_metadata(
+                                    &obj,
+                                    sop_instance_uid.clone(),
+                                    file_path_str.clone(),
+                                    series_instance_uid.clone(),
+                                );
+
 
                                 // Emit the OnFileStored event
                                 on_file_stored(
@@ -316,24 +321,9 @@ pub async fn run_store_async(
                                         "sop_instance_uid": sop_instance_uid.clone(),
                                         "transfer_syntax_uid": transfer_syntax_uid.clone(),
                                         "study_instance_uid": study_instance_uid.clone(),
-                                        "series_instance_uid": series_instance_uid.clone(),
-                                        "series_number": series_data.series_number,
-                                        "instance": {
-                                            "sop_instance_uid": sop_instance_uid.clone(),
-                                            "instance_number": instance_data.instance_number,
-                                            "file_path": file_path_str.clone(),
-                                            "rows": instance_data.rows,
-                                            "columns": instance_data.columns,
-                                            "bits_allocated": instance_data.bits_allocated,
-                                            "bits_stored": instance_data.bits_stored,
-                                            "high_bit": instance_data.high_bit,
-                                            "pixel_representation": instance_data.pixel_representation,
-                                            "photometric_interpretation": instance_data.photometric_interpretation,
-                                            "planar_configuration": instance_data.planar_configuration,
-                                            "pixel_aspect_ratio": instance_data.pixel_aspect_ratio,
-                                            "pixel_spacing": instance_data.pixel_spacing,
-                                            "lossy_image_compression": instance_data.lossy_image_compression,
-                                        }
+                                        "series_instance_uid": series.series_instance_uid,
+                                        "series_number": series.series_number,
+                                        "instance": instance
                                     })
                                 );
 
@@ -346,50 +336,14 @@ pub async fn run_store_async(
                                         series: Vec::new(),
                                     });
 
-                                    let series = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
-                                    if let Some(series) = series {
-                                        if !series.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
-                                            series.instances.push(Instance {
-                                                sop_instance_uid: sop_instance_uid.clone(),
-                                                instance_number: instance_data.instance_number,
-                                                file_path: file_path_str.clone(),
-                                                rows: instance_data.rows,
-                                                columns: instance_data.columns,
-                                                bits_allocated: instance_data.bits_allocated,
-                                                bits_stored: instance_data.bits_stored,
-                                                high_bit: instance_data.high_bit,
-                                                pixel_representation: instance_data.pixel_representation,
-                                                photometric_interpretation: instance_data.photometric_interpretation,
-                                                planar_configuration: instance_data.planar_configuration,
-                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
-                                                pixel_spacing: instance_data.pixel_spacing,
-                                                lossy_image_compression: instance_data.lossy_image_compression
-                                            });
+                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series.series_instance_uid);
+                                    if let Some(series_entry) = series_entry {
+                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == instance.sop_instance_uid) {
+                                            series_entry.instances.push(instance);
                                         }
                                     } else {
-                                        study.series.push(Series {
-                                            series_instance_uid: series_instance_uid.clone(),
-                                            series_number: series_data.series_number,
-                                            body_part_examined: series_data.body_part_examined,
-                                            protocol_name: series_data.protocol_name,
-                                            contrast_bolus_agent: series_data.contrast_bolus_agent,
-                                            instances: vec![Instance {
-                                                sop_instance_uid: sop_instance_uid.clone(),
-                                                instance_number: instance_data.instance_number,
-                                                file_path: file_path_str.clone(),
-                                                rows: instance_data.rows,
-                                                columns: instance_data.columns,
-                                                bits_allocated: instance_data.bits_allocated,
-                                                bits_stored: instance_data.bits_stored,
-                                                high_bit: instance_data.high_bit,
-                                                pixel_representation: instance_data.pixel_representation,
-                                                photometric_interpretation: instance_data.photometric_interpretation,
-                                                planar_configuration: instance_data.planar_configuration,
-                                                pixel_aspect_ratio: instance_data.pixel_aspect_ratio,
-                                                pixel_spacing: instance_data.pixel_spacing,
-                                                lossy_image_compression: instance_data.lossy_image_compression
-                                            }],
-                                        });
+                                        series.instances.push(instance);
+                                        study.series.push(series);
                                     }
                                 }
 
@@ -509,7 +463,12 @@ fn get_int_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> i64 
         .unwrap_or(0)
 }
 
-fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -> (ClinicalData, SeriesData, InstanceData) {
+fn extract_additional_metadata(
+    obj: &InMemDicomObject<StandardDataDictionary>,
+    sop_instance_uid: String,
+    file_path: String,
+    series_instance_uid: String,
+) -> (ClinicalData, Series, Instance) {
     let clinical_data = ClinicalData {
         patient_name: get_str_tag(obj, tags::PATIENT_NAME),
         patient_id: get_str_tag(obj, tags::PATIENT_ID),
@@ -517,9 +476,10 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
         patient_sex: get_str_tag(obj, tags::PATIENT_SEX),
     };
 
-    let instance_data = InstanceData {
+    let instance = Instance {
+        sop_instance_uid: sop_instance_uid.clone(),
         instance_number: get_int_tag(obj, tags::INSTANCE_NUMBER),
-        instance_sop_class_uid: get_str_tag(obj, tags::SOP_CLASS_UID),
+        file_path,
         rows: get_int_tag(obj, tags::ROWS),
         columns: get_int_tag(obj, tags::COLUMNS),
         bits_allocated: get_int_tag(obj, tags::BITS_ALLOCATED),
@@ -533,15 +493,16 @@ fn extract_additional_metadata(obj: &InMemDicomObject<StandardDataDictionary>) -
         lossy_image_compression: get_str_tag(obj, tags::LOSSY_IMAGE_COMPRESSION),
     };
 
-    let series_data = SeriesData {
+    let series = Series {
+        series_instance_uid,
         series_number: get_int_tag(obj, tags::SERIES_NUMBER),
-        modality: get_str_tag(obj, tags::MODALITY),
         body_part_examined: get_str_tag(obj, tags::BODY_PART_EXAMINED),
         protocol_name: get_str_tag(obj, tags::PROTOCOL_NAME),
         contrast_bolus_agent: get_str_tag(obj, tags::CONTRAST_BOLUS_AGENT),
+        instances: vec![], // Will be filled later
     };
 
-    (clinical_data, series_data, instance_data)
+    (clinical_data, series, instance)
 }
 
 fn create_cstore_response(
@@ -592,4 +553,44 @@ fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictio
         ),
         DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
     ])
+}
+
+// StorageBackend trait and implementations for Filesystem and S3
+#[async_trait]
+pub trait StorageBackend: Send + Sync {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>>;
+}
+
+pub struct FilesystemBackend {
+    pub out_dir: String,
+}
+
+#[async_trait]
+impl StorageBackend for FilesystemBackend {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let full_path = std::path::Path::new(&self.out_dir).join(path);
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(full_path, data)?;
+        Ok(())
+    }
+}
+
+pub struct S3Backend {
+    pub bucket: s3::bucket::Bucket,
+}
+
+#[async_trait]
+impl StorageBackend for S3Backend {
+    async fn store_file(&self, path: &str, data: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let key = path.replace("\\", "/");
+        let bucket = self.bucket.clone();
+        let data = data.to_vec();
+        s3_put_object(&bucket, &key, &data).await.map_err(|e| {
+            error!("Failed to upload file to S3: {}", e);
+            Box::<dyn std::error::Error>::from(e)
+        })?;
+        Ok(())
+    }
 }
