@@ -27,7 +27,7 @@ lazy_static::lazy_static! {
 
 /// Storage backend type
 #[napi(string_enum)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageBackendType {
     Filesystem,
     S3,
@@ -352,23 +352,26 @@ impl StoreSCP {
     #[napi]
     pub fn listen(&self) -> AsyncTask<StoreSCPServer> {
         info!("Starting server...");
-        // add debugging info for storage backend
-        info!("Storage backend: {:?}", self.storage_backend);
-        if let Some(ref s3_config) = self.s3_config {
-            //log the bucket name and region and endpoint for S3 config
-            info!("Using S3 storage backend");
-            info!("S3 Bucket: {}", s3_config.bucket);
-            if let Some(ref endpoint) = s3_config.endpoint {
-                info!("S3 Endpoint: {}", endpoint);
+        if self.storage_backend == StorageBackendType::S3 {
+            if let Some(ref s3_config) = self.s3_config {
+                //log the bucket name and region and endpoint for S3 config
+                info!("Using S3 storage backend");
+                info!("S3 Bucket: {}", s3_config.bucket);
+                if let Some(ref endpoint) = s3_config.endpoint {
+                    info!("S3 Endpoint: {}", endpoint);
+                } else {
+                    info!("S3 Endpoint: Not specified");
+                }
+                // S3 connectivity check at server startup
+                let config = s3_config.clone();
+                RUNTIME.block_on(async move {
+                    let bucket = build_s3_bucket(&config);
+                    check_s3_connectivity(&bucket).await;
+                });
             } else {
-                info!("S3 Endpoint: Not specified");
+                error!("S3 storage backend selected, but no S3 config provided!");
+                panic!("S3 config required for S3 backend");
             }
-            // S3 connectivity check at server startup
-            let config = s3_config.clone();
-            RUNTIME.block_on(async move {
-                let bucket = build_s3_bucket(&config);
-                check_s3_connectivity(&bucket).await;
-            });
         } else {
             info!("Using Filesystem storage backend");
         }
