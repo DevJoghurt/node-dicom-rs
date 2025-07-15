@@ -281,15 +281,8 @@ pub async fn run_store_async(
                                 let mut file_path = PathBuf::from(out_dir.as_ref().expect("Output directory must be set"));
                                 file_path.push(study_instance_uid.to_string());
                                 file_path.push(series_instance_uid.to_string());
-
-                                if matches!(&args.storage_backend, crate::storescp::StorageBackendType::Filesystem) {
-                                    std::fs::create_dir_all(&file_path).unwrap_or_else(|e| {
-                                        error!("Could not create directory: {}", e);
-                                        std::process::exit(-2);
-                                    });
-                                }
-
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
+
                                 let obj_for_file = obj.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
