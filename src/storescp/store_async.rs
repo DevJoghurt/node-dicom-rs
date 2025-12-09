@@ -410,16 +410,12 @@ pub async fn run_store_async(
                     _ => {}
                 }
             }
-            Err(err @ dicom_ul::association::server::Error::Receive { .. }) => {
+            Err(err) => {
                 if verbose {
                     info!("{}", Report::from_error(err));
                 } else {
                     info!("{}", err);
                 }
-                break;
-            }
-            Err(err) => {
-                warn!("Unexpected error: {}", Report::from_error(err));
                 break;
             }
         }

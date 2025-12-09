@@ -12,28 +12,28 @@ default = ["transcode"]
 transcode = ["dep:dicom-pixeldata"]
 
 [dependencies]
-napi = { version = "3.0.0-beta.10", default-features = false, features = ["napi8", "tokio_rt"] }
-napi-derive = { version = "3.0.0-beta.10", features = ["type-def"] }
-clap = { version = "4.0.18", features = ["derive"] }
-dicom-dump = "=0.8.0"
-dicom-object = "=0.8.1"
-dicom-core = "0.8.1"
-dicom-ul = { version = "0.8.1", features = ["async"] }
-dicom-encoding = "0.8.1"
-dicom-dictionary-std = "0.8.0"
-dicom-transfer-syntax-registry = "0.8.1"
-dicom-pixeldata = { version = "0.8.1", optional = true}
-walkdir = "2.3.2"
-indicatif = "0.17.0"
-snafu = "0.8"
-tracing = "0.1.36"
+napi = { version = "3.6.1", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = { version = "3.4.0", features = ["type-def"] }
+clap = { version = "4.5.53", features = ["derive"] }
+dicom-dump = "=0.9.0"
+dicom-object = "=0.9.0"
+dicom-core = "0.9.0"
+dicom-ul = { version = "0.9.0", features = ["async"] }
+dicom-encoding = "0.9.0"
+dicom-dictionary-std = "0.9.0"
+dicom-transfer-syntax-registry = "0.9.0"
+dicom-pixeldata = { version = "0.9.0", optional = true}
+walkdir = "2.5.0"
+indicatif = "0.18.3"
+snafu = "0.8.9"
+tracing = "0.1.43"
 lazy_static = "1.5.0"
-serde_json = "1.0.1"
-serde = "1.0.217"
-rust-s3 = "=0.36.0-beta.2"
-async-trait = "0.1"
-tracing-subscriber = "0.3.15"
-tokio = { version = "1.45.1", features = ["full"] }
+serde_json = "1.0.145"
+serde = "1.0.228"
+rust-s3 = "=0.37.0"
+async-trait = "0.1.89"
+tracing-subscriber = "0.3.22"
+tokio = { version = "1.48.0", features = ["full"] }
 
 [build-dependencies]
 napi-build = "2"

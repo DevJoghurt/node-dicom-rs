@@ -8,8 +8,7 @@ export declare class DicomFile {
   getPatientName(): string | null
   getElements(): DicomElements
   saveRawPixelData(path: string): string
-  /**
-   * Close the DICOM file to free resources
+  /** * Close the DICOM file to free resources
    */
   close(): void
 }

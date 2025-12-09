@@ -6,8 +6,8 @@ const sender = new StoreScu({
     verbose: true
 });
 
-sender.addFolder('./__test__/fixtures/study');
-//sender.addFile('./__test__/fixtures/test.dcm');
+//sender.addFolder('./__test__/fixtures/study');
+sender.addFile('./__test__/fixtures/test.dcm');
 
 const result = await sender.send();
 

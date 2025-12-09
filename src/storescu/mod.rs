@@ -78,7 +78,7 @@ struct DicomFile {
 enum Error {
     /// Could not initialize SCU
     Scu {
-        source: Box<dicom_ul::association::client::Error>,
+        source: Box<dicom_ul::association::Error>,
     },
 
     /// Could not construct DICOM command
@@ -435,9 +435,19 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
                     Some(file) => file,
                     None => break,
                 };
+                // Convert PresentationContextNegotiated to PresentationContextResult
+                let pcs: Vec<dicom_ul::pdu::PresentationContextResult> = scu
+                    .presentation_contexts()
+                    .iter()
+                    .map(|pc| dicom_ul::pdu::PresentationContextResult {
+                        id: pc.id,
+                        reason: pc.reason.clone(),
+                        transfer_syntax: pc.transfer_syntax.clone(),
+                    })
+                    .collect();
                 let r: Result<_, Error> = check_presentation_contexts(
                     &file,
-                    scu.presentation_contexts(),
+                    &pcs,
                     never_transcode,
                 );
                 match r {
