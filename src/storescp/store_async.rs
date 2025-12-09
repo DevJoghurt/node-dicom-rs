@@ -89,6 +89,7 @@ pub async fn run_store_async(
         study_timeout,
         storage_backend,
         s3_config,
+        store_with_file_meta,
     } = args;
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
@@ -145,6 +146,7 @@ pub async fn run_store_async(
         *study_timeout,
         storage_backend,
         s3_config,
+        *store_with_file_meta,
         args,
         on_file_stored,
         on_study_completed,
@@ -171,6 +173,7 @@ async fn inner(
     study_timeout: u32,
     storage_backend: &crate::storescp::StorageBackendType,
     s3_config: &Option<crate::storescp::S3Config>,
+    store_with_file_meta: bool,
     args: &StoreSCP,
     on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
     on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
@@ -341,7 +344,13 @@ async fn inner(
                                 let obj_for_file = obj.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
-                                file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                if store_with_file_meta {
+                                    // Write complete DICOM file with file meta header
+                                    file_obj.write_all(&mut dicom_bytes).whatever_context("could not serialize DICOM object")?;
+                                } else {
+                                    // Write dataset-only (more efficient, standard for PACS)
+                                    file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                }
                                 let storage_key = file_path.strip_prefix(std::path::Path::new(out_dir.as_ref().unwrap()))
                                     .unwrap_or(&file_path)
                                     .to_string_lossy()

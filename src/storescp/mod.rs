@@ -81,6 +81,9 @@ pub struct StoreSCP {
     /// Output directory for incoming objects using Filesystem storage backend
     // short = 'o', default_value = "."
     out_dir: Option<String>,
+    /// Store files with complete DICOM file meta header (true) or dataset-only (false)
+    /// Default is false (dataset-only), which is more efficient and standard for PACS systems
+    store_with_file_meta: bool,
 }
 
 
@@ -113,6 +116,7 @@ pub struct StoreSCPServer  {
     study_timeout: u32,
     storage_backend: StorageBackendType,
     s3_config: Option<S3Config>,
+    store_with_file_meta: bool,
 }
 
 #[napi]
@@ -134,6 +138,7 @@ impl napi::Task for StoreSCPServer {
       study_timeout: self.study_timeout,
       storage_backend: self.storage_backend.clone(),
       s3_config: self.s3_config.clone(),
+      store_with_file_meta: self.store_with_file_meta,
     };
 
     RUNTIME.block_on(async move {
@@ -212,6 +217,7 @@ async fn run(args: StoreSCP) -> Result<(), Box<dyn std::error::Error>> {
                   study_timeout: args.study_timeout,
                   storage_backend: args.storage_backend.clone(),
                   s3_config: args.s3_config.clone(),
+                  store_with_file_meta: args.store_with_file_meta,
               };
 
               let shutdown_notify = SHUTDOWN_NOTIFY.clone();
@@ -284,6 +290,9 @@ pub struct StoreSCPOptions {
     /// Output directory for incoming objects using Filesystem storage backend
     // short = 'o', default_value = "."
     pub out_dir: Option<String>,
+    /// Store files with complete DICOM file meta header (true) or dataset-only (false)
+    /// Default is false (dataset-only), which is more efficient and standard for PACS systems
+    pub store_with_file_meta: Option<bool>,
 }
 
 #[napi]
@@ -338,6 +347,7 @@ impl StoreSCP {
         }
         let storage_backend = options.storage_backend.unwrap_or(StorageBackendType::Filesystem);
         let s3_config = options.s3_config;
+        let store_with_file_meta = options.store_with_file_meta.unwrap_or(false);
         StoreSCP {
             verbose: verbose,
             calling_ae_title: calling_ae_title,
@@ -350,6 +360,7 @@ impl StoreSCP {
             study_timeout: study_timeout,
             storage_backend,
             s3_config,
+            store_with_file_meta,
         }
     }
 
@@ -391,6 +402,7 @@ impl StoreSCP {
           study_timeout: self.study_timeout,
           storage_backend: self.storage_backend.clone(),
           s3_config: self.s3_config.clone(),
+          store_with_file_meta: self.store_with_file_meta,
         })
     }
 

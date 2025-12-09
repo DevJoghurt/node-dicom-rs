@@ -19,6 +19,22 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod store_async;
+mod s3_storage;
+
+#[derive(Debug, Clone)]
+#[napi(object)]
+pub struct S3Config {
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum FileSource {
+    Local(PathBuf),
+    S3(String), // S3 key/path
+}
 
 /// DICOM C-STORE SCU
 #[napi]
@@ -27,8 +43,10 @@ pub struct StoreSCU {
     /// optionally with AE title
     /// (example: "STORE-SCP@127.0.0.1:104")
     addr: String,
-    /// the DICOM file(s) to store
-    files: Vec<PathBuf>,
+    /// the DICOM file(s) to store (local or S3)
+    file_sources: Vec<FileSource>,
+    /// S3 configuration for reading files from S3
+    s3_config: Option<S3Config>,
     /// verbose mode
     verbose: bool,
     /// the C-STORE message ID [default: 1]
@@ -62,8 +80,8 @@ pub struct StoreSCU {
 }
 
 struct DicomFile {
-    /// File path
-    file: PathBuf,
+    /// File source (local path or S3 key)
+    source: FileSource,
     /// Storage SOP Class UID
     sop_class_uid: String,
     /// Storage SOP Instance UID
@@ -74,6 +92,8 @@ struct DicomFile {
     ts_selected: Option<String>,
     /// Presentation Context selected
     pc_selected: Option<dicom_ul::pdu::PresentationContextNegotiated>,
+    /// Reserved for future use - not used to save memory (S3 files downloaded on-demand)
+    data: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Snafu)]
@@ -176,7 +196,9 @@ pub struct StoreSCUOptions {
     /// User Identity JWT
     pub jwt: Option<String>,
     /// Dispatch these many service users to send files in parallel
-    pub concurrency: Option<u32>
+    pub concurrency: Option<u32>,
+    /// S3 configuration for reading files from S3
+    pub s3_config: Option<S3Config>
 }
 
 #[napi]
@@ -184,7 +206,7 @@ impl StoreSCU {
 
     #[napi(constructor)]
     pub fn new(options: StoreSCUOptions) -> Self {
-        let files: Vec<PathBuf> = vec![];
+        let file_sources: Vec<FileSource> = vec![];
         let mut verbose: bool = false;
         if options.verbose.is_some() {
             verbose = options.verbose.unwrap();
@@ -230,7 +252,8 @@ impl StoreSCU {
 
         StoreSCU {
             addr: options.addr,
-            files: files,
+            file_sources: file_sources,
+            s3_config: options.s3_config,
             verbose: verbose,
             message_id: message_id,
             calling_ae_title: calling_ae_title,
@@ -250,19 +273,36 @@ impl StoreSCU {
 
     #[napi]
     pub fn add_file(&mut self, path: String) {
-        self.files.push(PathBuf::from(path));
+        if self.s3_config.is_some() {
+            // S3 path - normalize by removing ./ prefix
+            let normalized = path.trim_start_matches("./").to_string();
+            self.file_sources.push(FileSource::S3(normalized));
+        } else {
+            // Local file
+            self.file_sources.push(FileSource::Local(PathBuf::from(path)));
+        }
     }
 
     #[napi]
     pub fn add_folder(&mut self, path: String) {
-        let path = PathBuf::from(path);
-        if path.is_dir() {
-            for file in WalkDir::new(path.as_path())
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|f| !f.file_type().is_dir())
-            {
-                self.files.push(file.into_path());
+        if self.s3_config.is_some() {
+            // S3 folder (prefix) - normalize and ensure trailing slash for proper prefix matching
+            let mut normalized = path.trim_start_matches("./").to_string();
+            if !normalized.is_empty() && !normalized.ends_with('/') {
+                normalized.push('/');
+            }
+            self.file_sources.push(FileSource::S3(normalized));
+        } else {
+            // Local folder
+            let path = PathBuf::from(path);
+            if path.is_dir() {
+                for file in WalkDir::new(path.as_path())
+                    .into_iter()
+                    .filter_map(Result::ok)
+                    .filter(|f| !f.file_type().is_dir())
+                {
+                    self.file_sources.push(FileSource::Local(file.into_path()));
+                }
             }
         }
     }
@@ -271,7 +311,8 @@ impl StoreSCU {
     pub fn send(&self) -> AsyncTask<StoreSCUHandler> {
         AsyncTask::new(StoreSCUHandler {
             addr: self.addr.clone(),
-            files: self.files.clone(),
+            file_sources: self.file_sources.clone(),
+            s3_config: self.s3_config.clone(),
             verbose: self.verbose,
             message_id: self.message_id,
             calling_ae_title: self.calling_ae_title.clone(),
@@ -292,7 +333,8 @@ impl StoreSCU {
 
 pub struct StoreSCUHandler {
     addr: String,
-    files: Vec<PathBuf>,
+    file_sources: Vec<FileSource>,
+    s3_config: Option<S3Config>,
     verbose: bool,
     message_id: u16,
     calling_ae_title: String,
@@ -317,7 +359,8 @@ impl napi::Task for StoreSCUHandler {
     fn compute(&mut self) -> napi::bindgen_prelude::Result<Self::Output> {
         let args = StoreSCU {
             addr: self.addr.clone(),
-            files: self.files.clone(),
+            file_sources: self.file_sources.clone(),
+            s3_config: self.s3_config.clone(),
             verbose: self.verbose,
             message_id: self.message_id,
             calling_ae_title: self.calling_ae_title.clone(),
@@ -362,7 +405,8 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
     use dicom_ul::ClientAssociationOptions;
     let StoreSCU {
         addr,
-        files,
+        file_sources,
+        s3_config,
         verbose,
         message_id: _,
         calling_ae_title,
@@ -387,13 +431,27 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
     if verbose {
         info!("Establishing association with '{}'...", &addr);
     }
+    
+    // Expand S3 folders if needed
+    let expanded_sources = if s3_config.is_some() {
+        expand_s3_sources(file_sources, &s3_config).await?
+    } else {
+        file_sources
+    };
+    
+    // Clone s3_config for check_files (will be moved into blocking task)
+    let s3_config_clone = s3_config.clone();
+    
     let (dicom_files, presentation_contexts) =
-        tokio::task::spawn_blocking(move || check_files(files, verbose, never_transcode))
+        tokio::task::spawn_blocking(move || check_files(expanded_sources, s3_config_clone, verbose, never_transcode))
             .await
             .unwrap();
     let num_files = dicom_files.len();
     let dicom_files = Arc::new(Mutex::new(dicom_files));
     let mut tasks = tokio::task::JoinSet::new();
+    
+    // Setup S3 bucket once and share it across all tasks (memory-efficient)
+    let s3_bucket = s3_config.as_ref().map(|config| Arc::new(s3_storage::build_s3_bucket(config)));
 
     let progress_bar;
     if !verbose {
@@ -414,6 +472,7 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
     for _ in 0..concurrency.unwrap_or(1) {
         let pbx = progress_bar.clone();
         let d_files = dicom_files.clone();
+        let s3_bucket = s3_bucket.clone();
         let pc = presentation_contexts.clone();
         let addr = addr.clone();
         let jwt = jwt.clone();
@@ -465,6 +524,7 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
             store_async::inner(
                 scu,
                 d_files,
+                s3_bucket,
                 pbx.as_ref(),
                 fail_first,
                 verbose,
@@ -493,6 +553,66 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
         status: ResultStatus::Success,
         message: "All files sent successfully".to_string(),
     }])
+}
+
+async fn expand_s3_sources(
+    sources: Vec<FileSource>,
+    s3_config: &Option<S3Config>,
+) -> Result<Vec<FileSource>, Error> {
+    if s3_config.is_none() {
+        return Ok(sources);
+    }
+    
+    let config = s3_config.as_ref().unwrap();
+    let bucket = s3_storage::build_s3_bucket(config);
+    
+    let mut expanded = Vec::new();
+    
+    for source in sources {
+        match source {
+            FileSource::Local(path) => expanded.push(FileSource::Local(path)),
+            FileSource::S3(key) => {
+                // List all objects with this prefix (recursively)
+                let objects = s3_storage::s3_list_objects(&bucket, &key)
+                    .await
+                    .map_err(|e| {
+                        Error::ReadFilePath {
+                            path: format!("s3://{}", key),
+                            source: Box::new(dicom_object::ReadError::ReadFile {
+                                filename: format!("s3://{}", key).into(),
+                                source: std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Failed to list S3 objects: {}", e),
+                                ),
+                                backtrace: std::backtrace::Backtrace::capture(),
+                            }),
+                        }
+                    })?;
+                
+                if objects.is_empty() {
+                    // No objects found
+                    continue;
+                }
+                
+                // Filter to only include actual files (not folder markers)
+                // S3 folder markers either end with '/' or have no file extension
+                for obj_key in objects {
+                    // Skip folder markers (keys ending with /)
+                    if obj_key.ends_with('/') {
+                        continue;
+                    }
+                    
+                    // Only include files that look like actual files (have an extension or are explicitly files)
+                    // This helps avoid folder-like keys in S3
+                    if obj_key.contains('.') || !obj_key.ends_with('/') {
+                        expanded.push(FileSource::S3(obj_key));
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(expanded)
 }
 
 fn store_req_command(
@@ -530,34 +650,28 @@ fn store_req_command(
 
 
 fn check_files(
-    files: Vec<PathBuf>,
+    sources: Vec<FileSource>,
+    s3_config: Option<S3Config>,
     verbose: bool,
     never_transcode: bool,
 ) -> (Vec<DicomFile>, HashSet<(String, String)>) {
-    let mut checked_files: Vec<PathBuf> = vec![];
     let mut dicom_files: Vec<DicomFile> = vec![];
     let mut presentation_contexts = HashSet::new();
 
-    for file in files {
-        if file.is_dir() {
-            for file in WalkDir::new(file.as_path())
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|f| !f.file_type().is_dir())
-            {
-                checked_files.push(file.into_path());
-            }
-        } else {
-            checked_files.push(file);
-        }
-    }
+    // Setup S3 bucket if needed
+    let bucket = s3_config.as_ref().map(|config| s3_storage::build_s3_bucket(config));
 
-    for file in checked_files {
+    for source in sources {
+        let display_name = match &source {
+            FileSource::Local(path) => path.display().to_string(),
+            FileSource::S3(key) => format!("s3://{}", key),
+        };
+
         if verbose {
-            info!("Opening file '{}'...", file.display());
+            info!("Checking file '{}'...", display_name);
         }
 
-        match check_file(&file) {
+        match check_file_source(&source, bucket.as_ref()) {
             Ok(dicom_file) => {
                 presentation_contexts.insert((
                     dicom_file.sop_class_uid.to_string(),
@@ -580,8 +694,8 @@ fn check_files(
 
                 dicom_files.push(dicom_file);
             }
-            Err(_) => {
-                warn!("Could not open file {} as DICOM", file.display());
+            Err(e) => {
+                warn!("Could not open {} as DICOM: {:?}", display_name, e);
             }
         }
     }
@@ -591,6 +705,113 @@ fn check_files(
         std::process::exit(-1);
     }
     (dicom_files, presentation_contexts)
+}
+
+fn check_file_source(source: &FileSource, bucket: Option<&s3::Bucket>) -> Result<DicomFile, Error> {
+    match source {
+        FileSource::Local(path) => check_file(path),
+        FileSource::S3(key) => check_s3_file(key, bucket.unwrap()),
+    }
+}
+
+fn check_s3_file(key: &str, bucket: &s3::Bucket) -> Result<DicomFile, Error> {
+    // Download file data from S3 temporarily to read metadata
+    let rt = tokio::runtime::Handle::current();
+    let data = rt.block_on(async {
+        s3_storage::s3_get_object(bucket, key).await
+    }).map_err(|e| {
+        Error::ReadFilePath {
+            path: format!("s3://{}", key),
+            source: Box::new(dicom_object::ReadError::ReadFile {
+                filename: format!("s3://{}", key).into(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to download S3 object: {}", e),
+                ),
+                backtrace: std::backtrace::Backtrace::capture(),
+            }),
+        }
+    })?;
+
+    // Auto-detect file format by checking for DICM magic bytes at position 128
+    // Full DICOM files have: 128-byte preamble + "DICM" (4 bytes) + meta header
+    // Dataset-only files start directly with DICOM data elements
+    let has_dicm_magic = data.len() > 132 && &data[128..132] == b"DICM";
+    
+    let (storage_sop_class_uid, storage_sop_instance_uid, transfer_syntax_uid) = 
+        if has_dicm_magic {
+            // Full DICOM file with meta header
+            let dicom_file = dicom_object::from_reader(&data[..])
+                .map_err(Box::from)
+                .context(ReadFilePathSnafu {
+                    path: format!("s3://{}", key),
+                })?;
+            let meta = dicom_file.meta();
+            (
+                meta.media_storage_sop_class_uid.clone(),
+                meta.media_storage_sop_instance_uid.clone(),
+                meta.transfer_syntax.trim_end_matches('\0').to_string(),
+            )
+        } else {
+                // Dataset-only file (no meta header) - read as InMemDicomObject
+                use dicom_dictionary_std::tags;
+                use dicom_encoding::TransferSyntaxIndex;
+                
+                // Try reading as dataset with explicit VR little endian (most common)
+                let obj = InMemDicomObject::read_dataset_with_ts(
+                    &data[..],
+                    &dicom_transfer_syntax_registry::entries::EXPLICIT_VR_LITTLE_ENDIAN.erased(),
+                )
+                .or_else(|_| {
+                    // Fall back to implicit VR little endian
+                    InMemDicomObject::read_dataset_with_ts(
+                        &data[..],
+                        &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased(),
+                    )
+                })
+                .map_err(Box::from)
+                .context(ReadFilePathSnafu {
+                    path: format!("s3://{}", key),
+                })?;
+                
+                // Extract metadata from dataset attributes
+                let sop_class_uid = obj
+                    .element(tags::SOP_CLASS_UID)
+                    .context(MissingAttributeSnafu { tag: tags::SOP_CLASS_UID })?
+                    .to_str()
+                    .context(ConvertFieldSnafu { tag: tags::SOP_CLASS_UID })?
+                    .to_string();
+                    
+                let sop_instance_uid = obj
+                    .element(tags::SOP_INSTANCE_UID)
+                    .context(MissingAttributeSnafu { tag: tags::SOP_INSTANCE_UID })?
+                    .to_str()
+                    .context(ConvertFieldSnafu { tag: tags::SOP_INSTANCE_UID })?
+                    .to_string();
+                
+                // Assume explicit VR little endian as transfer syntax for dataset-only files
+                let transfer_syntax = uids::EXPLICIT_VR_LITTLE_ENDIAN.to_string();
+                
+                (sop_class_uid, sop_instance_uid, transfer_syntax)
+        };
+    
+    let transfer_syntax_uid = transfer_syntax_uid.trim_end_matches('\0');
+    let ts = TransferSyntaxRegistry
+        .get(transfer_syntax_uid)
+        .with_context(|| UnsupportedFileTransferSyntaxSnafu {
+            uid: transfer_syntax_uid.to_string(),
+        })?;
+    
+    // Don't cache data - we'll download again during send to save memory
+    Ok(DicomFile {
+        source: FileSource::S3(key.to_string()),
+        sop_class_uid: storage_sop_class_uid.to_string(),
+        sop_instance_uid: storage_sop_instance_uid.to_string(),
+        file_transfer_syntax: String::from(ts.uid()),
+        ts_selected: None,
+        pc_selected: None,
+        data: None,
+    })
 }
 
 fn check_file(file: &Path) -> Result<DicomFile, Error> {
@@ -617,12 +838,13 @@ fn check_file(file: &Path) -> Result<DicomFile, Error> {
             uid: transfer_syntax_uid.to_string(),
         })?;
     Ok(DicomFile {
-        file: file.to_path_buf(),
+        source: FileSource::Local(file.to_path_buf()),
         sop_class_uid: storage_sop_class_uid.to_string(),
         sop_instance_uid: storage_sop_instance_uid.to_string(),
         file_transfer_syntax: String::from(ts.uid()),
         ts_selected: None,
         pc_selected: None,
+        data: None,
     })
 }
 

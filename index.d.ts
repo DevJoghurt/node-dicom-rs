@@ -112,6 +112,13 @@ export interface S3Config {
   endpoint?: string
 }
 
+export interface S3Config {
+  bucket: string
+  accessKey: string
+  secretKey: string
+  endpoint?: string
+}
+
 export declare function saveRawPixelData(filePath: string, outPath: string): string
 
 /** Storage backend type */
@@ -146,6 +153,11 @@ export interface StoreScpOptions {
   s3Config?: S3Config
   /** Output directory for incoming objects using Filesystem storage backend */
   outDir?: string
+  /**
+   * Store files with complete DICOM file meta header (true) or dataset-only (false)
+   * Default is false (dataset-only), which is more efficient and standard for PACS systems
+   */
+  storeWithFileMeta?: boolean
 }
 
 export interface StoreScuOptions {
@@ -186,4 +198,6 @@ export interface StoreScuOptions {
   jwt?: string
   /** Dispatch these many service users to send files in parallel */
   concurrency?: number
+  /** S3 configuration for reading files from S3 */
+  s3Config?: S3Config
 }
