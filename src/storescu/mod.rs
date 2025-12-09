@@ -5,7 +5,7 @@ use dicom_encoding::transfer_syntax;
 use dicom_encoding::TransferSyntax;
 use dicom_object::{mem::InMemDicomObject, DefaultDicomObject, StandardDataDictionary};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{error, info, warn, Level};
 use indicatif::{ProgressBar, ProgressStyle};
 use snafu::prelude::*;
 use snafu::{Report, Whatever};
@@ -45,6 +45,8 @@ pub struct StoreSCU {
     /// fail file transfer if it cannot be done without transcoding
     // hide option if transcoding is disabled [default: true]
     never_transcode: bool,
+    /// accept files with any SOP class UID in storage, not only those specified in the presentation contexts
+    ignore_sop_class: bool,
     /// User Identity username
     username: Option<String>,
     /// User Identity password
@@ -71,7 +73,7 @@ struct DicomFile {
     /// Transfer Syntax selected
     ts_selected: Option<String>,
     /// Presentation Context selected
-    pc_selected: Option<dicom_ul::pdu::PresentationContextResult>,
+    pc_selected: Option<dicom_ul::pdu::PresentationContextNegotiated>,
 }
 
 #[derive(Debug, Snafu)]
@@ -161,6 +163,8 @@ pub struct StoreSCUOptions {
     /// fail file transfer if it cannot be done without transcoding
     // hide option if transcoding is disabled [default: true]
     pub never_transcode: Option<bool>,
+    /// accept files with any SOP class UID in storage
+    pub ignore_sop_class: Option<bool>,
     /// User Identity username
     pub username: Option<String>,
     /// User Identity password
@@ -205,6 +209,10 @@ impl StoreSCU {
         if options.never_transcode.is_some() {
             never_transcode = options.never_transcode.unwrap();
         }
+        let mut ignore_sop_class: bool = false;
+        if options.ignore_sop_class.is_some() {
+            ignore_sop_class = options.ignore_sop_class.unwrap();
+        }
         let mut concurrency: Option<u32> = None;
         if options.concurrency.is_some() {
             concurrency = Some(options.concurrency.unwrap());
@@ -230,6 +238,7 @@ impl StoreSCU {
             max_pdu_length: max_pdu_length,
             fail_first: fail_first,
             never_transcode: never_transcode,
+            ignore_sop_class: ignore_sop_class,
             username: options.username.or(None),
             password: options.password.or(None),
             kerberos_service_ticket: options.kerberos_service_ticket.or(None),
@@ -270,6 +279,7 @@ impl StoreSCU {
             max_pdu_length: self.max_pdu_length,
             fail_first: self.fail_first,
             never_transcode: self.never_transcode,
+            ignore_sop_class: self.ignore_sop_class,
             username: self.username.clone(),
             password: self.password.clone(),
             kerberos_service_ticket: self.kerberos_service_ticket.clone(),
@@ -290,6 +300,7 @@ pub struct StoreSCUHandler {
     max_pdu_length: u32,
     fail_first: bool,
     never_transcode: bool,
+    ignore_sop_class: bool,
     username: Option<String>,
     password: Option<String>,
     kerberos_service_ticket: Option<String>,
@@ -314,6 +325,7 @@ impl napi::Task for StoreSCUHandler {
             max_pdu_length: self.max_pdu_length,
             fail_first: self.fail_first,
             never_transcode: self.never_transcode,
+            ignore_sop_class: self.ignore_sop_class,
             username: self.username.clone(),
             password: self.password.clone(),
             kerberos_service_ticket: self.kerberos_service_ticket.clone(),
@@ -347,17 +359,18 @@ impl napi::Task for StoreSCUHandler {
 }
 
 async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
-    use store_async::{get_scu, send_file};
+    use dicom_ul::ClientAssociationOptions;
     let StoreSCU {
         addr,
         files,
         verbose,
-        message_id,
+        message_id: _,
         calling_ae_title,
         called_ae_title,
         max_pdu_length,
         fail_first,
         mut never_transcode,
+        ignore_sop_class,
         username,
         password,
         kerberos_service_ticket,
@@ -380,7 +393,6 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
             .unwrap();
     let num_files = dicom_files.len();
     let dicom_files = Arc::new(Mutex::new(dicom_files));
-    let results = Arc::new(Mutex::new(Vec::new()));
     let mut tasks = tokio::task::JoinSet::new();
 
     let progress_bar;
@@ -411,73 +423,56 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
         let password = password.clone();
         let called_ae_title = called_ae_title.clone();
         let calling_ae_title = calling_ae_title.clone();
-        let results = results.clone();
         tasks.spawn(async move {
-            let mut scu = get_scu(
-                addr,
-                calling_ae_title,
-                called_ae_title,
-                max_pdu_length,
-                username,
-                password,
-                kerberos_service_ticket,
-                saml_assertion,
-                jwt,
-                pc,
+            let mut scu_init = ClientAssociationOptions::new()
+                .calling_ae_title(calling_ae_title)
+                .max_pdu_length(max_pdu_length);
+
+            for (storage_sop_class_uid, transfer_syntax) in &pc {
+                scu_init = scu_init.with_presentation_context(storage_sop_class_uid, vec![transfer_syntax]);
+            }
+
+            if let Some(called_ae_title) = called_ae_title {
+                scu_init = scu_init.called_ae_title(called_ae_title);
+            }
+
+            if let Some(username) = username {
+                scu_init = scu_init.username(username);
+            }
+
+            if let Some(password) = password {
+                scu_init = scu_init.password(password);
+            }
+
+            if let Some(kerberos_service_ticket) = kerberos_service_ticket {
+                scu_init = scu_init.kerberos_service_ticket(kerberos_service_ticket);
+            }
+
+            if let Some(saml_assertion) = saml_assertion {
+                scu_init = scu_init.saml_assertion(saml_assertion);
+            }
+
+            if let Some(jwt) = jwt {
+                scu_init = scu_init.jwt(jwt);
+            }
+
+            let scu = scu_init
+                .establish_with_async(&addr)
+                .await
+                .map_err(Box::from)
+                .context(ScuSnafu)?;
+
+            store_async::inner(
+                scu,
+                d_files,
+                pbx.as_ref(),
+                fail_first,
+                verbose,
+                never_transcode,
+                ignore_sop_class,
             )
             .await?;
-            loop {
-                let file = {
-                    let mut files = d_files.lock().await;
-                    files.pop()
-                };
-                let mut file = match file {
-                    Some(file) => file,
-                    None => break,
-                };
-                // Convert PresentationContextNegotiated to PresentationContextResult
-                let pcs: Vec<dicom_ul::pdu::PresentationContextResult> = scu
-                    .presentation_contexts()
-                    .iter()
-                    .map(|pc| dicom_ul::pdu::PresentationContextResult {
-                        id: pc.id,
-                        reason: pc.reason.clone(),
-                        transfer_syntax: pc.transfer_syntax.clone(),
-                    })
-                    .collect();
-                let r: Result<_, Error> = check_presentation_contexts(
-                    &file,
-                    &pcs,
-                    never_transcode,
-                );
-                match r {
-                    Ok((pc, ts)) => {
-                        if verbose {
-                            debug!(
-                                "{}: Selected presentation context: {:?}",
-                                file.file.display(),
-                                pc
-                            );
-                        }
-                        file.pc_selected = Some(pc);
-                        file.ts_selected = Some(ts);
-                    }
-                    Err(e) => {
-                        error!("{}", Report::from_error(e));
-                        let mut results = results.lock().await;
-                        results.push(ResultObject {
-                            status: ResultStatus::Error,
-                            message: format!("Error sending file: {}", file.file.display()),
-                        });
-                        continue;
-                    }
-                }
-                let (new_scu, result) = send_file(scu, file, message_id, pbx.as_ref(), verbose, fail_first).await?;
-                scu = new_scu;
-                let mut results = results.lock().await;
-                results.push(result);
-            }
-            let _ = scu.release().await;
+
             Ok::<(), Error>(())
         });
     }
@@ -494,8 +489,10 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
         pb.lock().await.finish_with_message("done")
     };
 
-    let results = Arc::try_unwrap(results).unwrap().into_inner();
-    Ok(results)
+    Ok(vec![ResultObject {
+        status: ResultStatus::Success,
+        message: "All files sent successfully".to_string(),
+    }])
 }
 
 fn store_req_command(
@@ -631,9 +628,10 @@ fn check_file(file: &Path) -> Result<DicomFile, Error> {
 
 fn check_presentation_contexts(
     file: &DicomFile,
-    pcs: &[dicom_ul::pdu::PresentationContextResult],
+    pcs: &[dicom_ul::pdu::PresentationContextNegotiated],
+    ignore_sop_class: bool,
     never_transcode: bool,
-) -> Result<(dicom_ul::pdu::PresentationContextResult, String), Error> {
+) -> Result<(dicom_ul::pdu::PresentationContextNegotiated, String), Error> {
     let file_ts = TransferSyntaxRegistry
         .get(&file.file_transfer_syntax)
         .with_context(|| UnsupportedFileTransferSyntaxSnafu {
@@ -648,6 +646,9 @@ fn check_presentation_contexts(
     }
 
     let pc = pcs.iter().find(|pc| {
+        if !ignore_sop_class && pc.abstract_syntax != file.sop_class_uid {
+            return false;
+        }
         // Check support for this transfer syntax.
         // If it is the same as the file, we're good.
         // Otherwise, uncompressed data set encoding
@@ -670,6 +671,7 @@ fn check_presentation_contexts(
 
             // Else, if transcoding is possible, we go for it.
             pcs.iter()
+                .filter(|pc| ignore_sop_class || pc.abstract_syntax == file.sop_class_uid)
                 // accept explicit VR little endian
                 .find(|pc| pc.transfer_syntax == uids::EXPLICIT_VR_LITTLE_ENDIAN)
                 .or_else(||

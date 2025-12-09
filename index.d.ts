@@ -172,6 +172,8 @@ export interface StoreScuOptions {
   failFirst?: boolean
   /** fail file transfer if it cannot be done without transcoding */
   neverTranscode?: boolean
+  /** accept files with any SOP class UID in storage */
+  ignoreSopClass?: boolean
   /** User Identity username */
   username?: string
   /** User Identity password */
