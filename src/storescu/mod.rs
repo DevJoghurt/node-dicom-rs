@@ -1,4 +1,5 @@
 use napi::bindgen_prelude::AsyncTask;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use dicom_core::{dicom_value, header::Tag, DataElement, VR};
 use dicom_dictionary_std::{tags, uids};
 use dicom_encoding::transfer_syntax;
@@ -16,10 +17,17 @@ use std::time::Duration;
 use transfer_syntax::TransferSyntaxIndex;
 use walkdir::WalkDir;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 mod store_async;
 mod s3_storage;
+
+type EventSender = broadcast::Sender<(Event, EventData)>;
+type EventReceiver = broadcast::Receiver<(Event, EventData)>;
+
+lazy_static::lazy_static! {
+    static ref EVENT_CHANNEL: (EventSender, EventReceiver) = broadcast::channel(100);
+}
 
 #[derive(Debug, Clone)]
 #[napi(object)]
@@ -28,6 +36,24 @@ pub struct S3Config {
     pub access_key: String,
     pub secret_key: String,
     pub endpoint: Option<String>,
+}
+
+#[napi(string_enum)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    OnTransferStarted,
+    OnFileSending,
+    OnFileSent,
+    OnFileError,
+    OnTransferCompleted,
+    OnError,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct EventData {
+    pub message: String,
+    pub data: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,15 +266,23 @@ impl StoreSCU {
             concurrency = Some(options.concurrency.unwrap());
         }
 
-        tracing::subscriber::set_global_default(
+        // Only set global logger if not already set (it can only be set once per process)
+        // Use RUST_LOG env var if set, otherwise use verbose flag
+        use tracing_subscriber::EnvFilter;
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                if verbose {
+                    EnvFilter::new("debug")
+                } else {
+                    EnvFilter::new("error")
+                }
+            });
+        
+        let _ = tracing::subscriber::set_global_default(
             tracing_subscriber::FmtSubscriber::builder()
-                .with_max_level(if verbose { Level::DEBUG } else { Level::INFO })
+                .with_env_filter(filter)
                 .finish(),
-        )
-        .whatever_context("Could not set up global logging subscriber")
-        .unwrap_or_else(|e: Whatever| {
-            eprintln!("[ERROR] {}", Report::from_error(e));
-        });
+        );
 
         StoreSCU {
             addr: options.addr,
@@ -328,6 +362,25 @@ impl StoreSCU {
             jwt: self.jwt.clone(),
             concurrency: self.concurrency,
         })
+    }
+
+    #[napi]
+    pub fn add_event_listener(&self, event: Event, handler: ThreadsafeFunction<EventData>) {
+        let mut rx = EVENT_CHANNEL.0.subscribe();
+        std::thread::spawn(move || loop {
+            match rx.blocking_recv() {
+                Ok((ev, data)) => {
+                    if ev == event {
+                        handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
+                    }
+                }
+                Err(_) => break,
+            }
+        });
+    }
+
+    pub(crate) fn emit_event(event: Event, data: EventData) {
+        let _ = EVENT_CHANNEL.0.send((event, data));
     }
 }
 
@@ -483,6 +536,16 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
         let called_ae_title = called_ae_title.clone();
         let calling_ae_title = calling_ae_title.clone();
         tasks.spawn(async move {
+            // Emit OnTransferStarted event before moves
+            StoreSCU::emit_event(Event::OnTransferStarted, EventData {
+                message: "Transfer started".to_string(),
+                data: Some(serde_json::json!({
+                    "address": &addr,
+                    "callingAeTitle": &calling_ae_title,
+                    "totalFiles": num_files,
+                }).to_string()),
+            });
+            
             let mut scu_init = ClientAssociationOptions::new()
                 .calling_ae_title(calling_ae_title)
                 .max_pdu_length(max_pdu_length);
@@ -548,6 +611,15 @@ async fn run_async(args: StoreSCU) -> Result<Vec<ResultObject>, Error> {
     if let Some(pb) = progress_bar {
         pb.lock().await.finish_with_message("done")
     };
+
+    // Emit OnTransferCompleted event
+    StoreSCU::emit_event(Event::OnTransferCompleted, EventData {
+        message: "All files transferred successfully".to_string(),
+        data: Some(serde_json::json!({
+            "totalFiles": num_files,
+            "status": "completed",
+        }).to_string()),
+    });
 
     Ok(vec![ResultObject {
         status: ResultStatus::Success,

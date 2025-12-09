@@ -15,8 +15,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::storescu::{
     check_presentation_contexts, into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu,
-    DicomFile, Error, FileSource, MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu,
-    UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
+    DicomFile, Error, Event, EventData, FileSource, MissingAttributeSnafu, ReadDatasetSnafu, 
+    ReadFilePathSnafu, ScuSnafu, StoreSCU, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
 };
 
 
@@ -31,7 +31,24 @@ pub async fn send_file(
     fail_first: bool,
 ) -> Result<ClientAssociation<TcpStream>, Error>
 {
+    let start_time = std::time::Instant::now();
+    
     if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
+        // Emit OnFileSending event
+        let file_path = match &file.source {
+            FileSource::Local(path) => path.display().to_string(),
+            FileSource::S3(key) => format!("s3://{}", key),
+        };
+        
+        StoreSCU::emit_event(Event::OnFileSending, EventData {
+            message: "Sending file".to_string(),
+            data: Some(serde_json::json!({
+                "file": file_path,
+                "sopInstanceUid": file.sop_instance_uid,
+                "sopClassUid": file.sop_class_uid,
+                "transferSyntax": ts_uid_selected,
+            }).to_string()),
+        });
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
 
         let mut cmd_data = Vec::with_capacity(128);
@@ -222,9 +239,33 @@ pub async fn send_file(
                 match status {
                     // Success
                     0 => {
+                        let elapsed = start_time.elapsed();
                         if verbose {
-                            info!("Successfully stored instance {}", storage_sop_instance_uid);
+                            info!(
+                                "Successfully stored instance {} in {:.2}s",
+                                storage_sop_instance_uid,
+                                elapsed.as_secs_f64()
+                            );
                         }
+                        
+                        // Emit OnFileSent event
+                        let file_path = match &file.source {
+                            FileSource::Local(path) => path.display().to_string(),
+                            FileSource::S3(key) => format!("s3://{}", key),
+                        };
+                        
+                        StoreSCU::emit_event(Event::OnFileSent, EventData {
+                            message: "File sent successfully".to_string(),
+                            data: Some(serde_json::json!({
+                                "file": file_path,
+                                "sopInstanceUid": storage_sop_instance_uid,
+                                "sopClassUid": file.sop_class_uid,
+                                "transferSyntax": ts_uid_selected,
+                                "durationMs": elapsed.as_millis(),
+                                "durationSeconds": elapsed.as_secs_f64(),
+                                "status": "success",
+                            }).to_string()),
+                        });
                     }
                     // Warning
                     1 | 0x0107 | 0x0116 | 0xB000..=0xBFFF => {
@@ -250,10 +291,30 @@ pub async fn send_file(
                         }
                     }
                     _ => {
+                        let elapsed = start_time.elapsed();
                         error!(
                             "Failed to store instance `{}` (status code {:04X}H)",
                             storage_sop_instance_uid, status
                         );
+                        
+                        // Emit OnFileError event
+                        let file_path = match &file.source {
+                            FileSource::Local(path) => path.display().to_string(),
+                            FileSource::S3(key) => format!("s3://{}", key),
+                        };
+                        
+                        StoreSCU::emit_event(Event::OnFileError, EventData {
+                            message: format!("Failed to store file (status code {:04X}H)", status),
+                            data: Some(serde_json::json!({
+                                "file": file_path,
+                                "sopInstanceUid": storage_sop_instance_uid,
+                                "sopClassUid": &file.sop_class_uid,
+                                "statusCode": format!("{:04X}H", status),
+                                "durationMs": elapsed.as_millis(),
+                                "error": format!("Status code {:04X}H", status),
+                            }).to_string()),
+                        });
+                        
                         if fail_first {
                             let _ = scu.abort().await;
                             std::process::exit(-2);

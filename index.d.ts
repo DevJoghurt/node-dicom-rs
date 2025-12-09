@@ -28,6 +28,7 @@ export declare class StoreScu {
   addFile(path: string): void
   addFolder(path: string): void
   send(): Promise<unknown>
+  addEventListener(event: Event, handler: ((err: Error | null, arg: EventData) => any)): void
 }
 export type StoreSCU = StoreScu
 
@@ -82,11 +83,25 @@ export interface DicomFileMeta {
 }
 
 export declare const enum Event {
+  OnTransferStarted = 'OnTransferStarted',
+  OnFileSending = 'OnFileSending',
+  OnFileSent = 'OnFileSent',
+  OnFileError = 'OnFileError',
+  OnTransferCompleted = 'OnTransferCompleted',
+  OnError = 'OnError'
+}
+
+export declare const enum Event {
   OnServerStarted = 'OnServerStarted',
   OnError = 'OnError',
   OnConnection = 'OnConnection',
   OnFileStored = 'OnFileStored',
   OnStudyCompleted = 'OnStudyCompleted'
+}
+
+export interface EventData {
+  message: string
+  data?: string
 }
 
 export interface EventData {

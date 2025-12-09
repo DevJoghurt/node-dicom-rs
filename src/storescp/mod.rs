@@ -305,21 +305,23 @@ impl StoreSCP {
             verbose = options.verbose.unwrap();
         }
         // set up global logger
-        tracing::subscriber::set_global_default(
+        // Only set global logger if not already set (it can only be set once per process)
+        // Use RUST_LOG env var if set, otherwise use verbose flag
+        use tracing_subscriber::EnvFilter;
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                if verbose {
+                    EnvFilter::new("debug")
+                } else {
+                    EnvFilter::new("error")
+                }
+            });
+        
+        let _ = tracing::subscriber::set_global_default(
           tracing_subscriber::FmtSubscriber::builder()
-              .with_max_level(if verbose {
-                  Level::DEBUG
-              } else {
-                  Level::INFO
-              })
+              .with_env_filter(filter)
               .finish(),
-        )
-        .unwrap_or_else(|e| {
-            eprintln!(
-                "Could not set up global logger: {}",
-                snafu::Report::from_error(e)
-            );
-        });
+        );
 
         let mut calling_ae_title: String = String::from("STORE-SCP");
         if options.calling_ae_title.is_some() {
