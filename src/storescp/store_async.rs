@@ -1,21 +1,26 @@
-use dicom_dictionary_std::tags;
-use dicom_core::{dicom_value, DataElement, VR, Tag};
-use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder};
-use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
-use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use dicom_ul::{pdu::PDataValueType, Pdu};
-use snafu::{OptionExt, Report, ResultExt, Whatever};
-use std::path::PathBuf;
-use tracing::{debug, info, warn, error};
 use std::collections::HashMap;
-use tokio::sync::Mutex;
-use std::time::Duration;
-use tokio::time::sleep;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+use dicom_core::Tag;
+use dicom_dictionary_std::tags;
+use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
+use dicom_object::{FileMetaTableBuilder, InMemDicomObject, StandardDataDictionary};
+use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
+use dicom_ul::{
+    association::ServerAssociation,
+    pdu::{PDataValueType, PresentationContextResultReason},
+    Pdu,
+};
+use snafu::{OptionExt, Report, ResultExt, Whatever};
+use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::{debug, info, warn, error};
 use serde::Serialize;
 use async_trait::async_trait;
 
-use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
+use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreSCP};
 use crate::storescp::s3_storage::{build_s3_bucket, s3_put_object};
 
 #[derive(Clone, Debug, Serialize)]
@@ -81,18 +86,10 @@ pub async fn run_store_async(
         max_pdu_length,
         out_dir,
         port: _,
-        study_timeout: _,
+        study_timeout,
         storage_backend,
         s3_config,
     } = args;
-    let verbose = *verbose;
-
-    let study_timeout_duration = Duration::from_secs(args.study_timeout as u64); // Configurable timeout
-
-    let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
-    let mut msgid = 1;
-    let mut sop_class_uid = "".to_string();
-    let mut sop_instance_uid = "".to_string();
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
         .accept_any()
@@ -117,16 +114,74 @@ pub async fn run_store_async(
         options = options.with_abstract_syntax(*uid);
     }
 
-    let mut association = options
+    let peer_addr = scu_stream.peer_addr().ok();
+    let association = options
         .establish_async(scu_stream)
         .await
         .whatever_context("could not establish association")?;
 
     info!("New association from {}", association.client_ae_title());
+    if *verbose {
+        debug!(
+            "> Presentation contexts: {:?}",
+            association.presentation_contexts()
+        );
+    }
     debug!(
-        "> Presentation contexts: {:?}",
+        "#accepted_presentation_contexts={}, acceptor_max_pdu_length={}, requestor_max_pdu_length={}",
         association.presentation_contexts()
+            .iter()
+            .filter(|pc| pc.reason == PresentationContextResultReason::Acceptance)
+            .count(),
+        association.acceptor_max_pdu_length(),
+        association.requestor_max_pdu_length(),
     );
+
+    let peer_title = association.client_ae_title().to_string();
+    inner(
+        association,
+        *verbose,
+        out_dir,
+        *study_timeout,
+        storage_backend,
+        s3_config,
+        args,
+        on_file_stored,
+        on_study_completed,
+    )
+    .await?;
+
+    if let Some(peer_addr) = peer_addr {
+        info!(
+            "Dropping connection with {} ({})",
+            peer_title,
+            peer_addr
+        );
+    } else {
+        info!("Dropping connection with {}", peer_title);
+    }
+
+    Ok(())
+}
+
+async fn inner(
+    mut association: ServerAssociation<tokio::net::TcpStream>,
+    verbose: bool,
+    out_dir: &Option<String>,
+    study_timeout: u32,
+    storage_backend: &crate::storescp::StorageBackendType,
+    s3_config: &Option<crate::storescp::S3Config>,
+    args: &StoreSCP,
+    on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
+) -> Result<(), Whatever>
+{
+    let study_timeout_duration = Duration::from_secs(study_timeout as u64);
+
+    let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
+    let mut msgid = 1;
+    let mut sop_class_uid = "".to_string();
+    let mut sop_instance_uid = "".to_string();
 
     // --- Storage backend selection ---
     let storage_backend: Box<dyn StorageBackend> = match storage_backend {
@@ -410,7 +465,7 @@ pub async fn run_store_async(
                     _ => {}
                 }
             }
-            Err(err) => {
+            Err(err @ dicom_ul::association::Error::ReceivePdu { .. }) => {
                 if verbose {
                     info!("{}", Report::from_error(err));
                 } else {
@@ -418,17 +473,11 @@ pub async fn run_store_async(
                 }
                 break;
             }
+            Err(err) => {
+                warn!("Unexpected error: {}", Report::from_error(err));
+                break;
+            }
         }
-    }
-
-    if let Ok(peer_addr) = association.inner_stream().peer_addr() {
-        info!(
-            "Dropping connection with {} ({})",
-            association.client_ae_title(),
-            peer_addr
-        );
-    } else {
-        info!("Dropping connection with {}", association.client_ae_title());
     }
 
     Ok(())
@@ -494,55 +543,7 @@ fn extract_additional_metadata(
     (clinical_data, series, instance)
 }
 
-fn create_cstore_response(
-    message_id: u16,
-    sop_class_uid: &str,
-    sop_instance_uid: &str,
-) -> InMemDicomObject<StandardDataDictionary> {
-    InMemDicomObject::command_from_element_iter([
-        DataElement::new(
-            tags::AFFECTED_SOP_CLASS_UID,
-            VR::UI,
-            dicom_value!(Str, sop_class_uid),
-        ),
-        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8001])),
 
-        DataElement::new(
-            tags::MESSAGE_ID_BEING_RESPONDED_TO,
-            VR::US,
-            dicom_value!(U16, [message_id]),
-        ),
-        DataElement::new(
-            tags::COMMAND_DATA_SET_TYPE,
-            VR::US,
-            dicom_value!(U16, [0x0101]),
-        ),
-        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
-
-        DataElement::new(
-            tags::AFFECTED_SOP_INSTANCE_UID,
-            VR::UI,
-            dicom_value!(Str, sop_instance_uid),
-        ),
-    ])
-}
-
-fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
-    InMemDicomObject::command_from_element_iter([
-        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8030])),
-        DataElement::new(
-            tags::MESSAGE_ID_BEING_RESPONDED_TO,
-            VR::US,
-            dicom_value!(U16, [message_id]),
-        ),
-        DataElement::new(
-            tags::COMMAND_DATA_SET_TYPE,
-            VR::US,
-            dicom_value!(U16, [0x0101]),
-        ),
-        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
-    ])
-}
 
 // StorageBackend trait and implementations for Filesystem and S3
 #[async_trait]
