@@ -16,7 +16,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::storescu::{
     check_presentation_contexts, into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu,
-    DicomFile, Error, FileSendingEvent, FileSentEvent, FileErrorEvent, FileSource, MissingAttributeSnafu, 
+    DicomFile, Error, FileSendingEvent, FileSendingData, FileSentEvent, FileSentData, 
+    FileErrorEvent, FileErrorData, FileSource, MissingAttributeSnafu, 
     ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, StoreScu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
 };
 
@@ -52,9 +53,11 @@ pub async fn send_file(
         if let Some(cb) = &callbacks.on_file_sending {
             cb.call(Ok(FileSendingEvent {
                 message: "Sending file".to_string(),
-                file: file_path.clone(),
-                sop_instance_uid: file.sop_instance_uid.clone(),
-                sop_class_uid: file.sop_class_uid.clone(),
+                data: Some(FileSendingData {
+                    file: file_path.clone(),
+                    sop_instance_uid: file.sop_instance_uid.clone(),
+                    sop_class_uid: file.sop_class_uid.clone(),
+                }),
             }), ThreadsafeFunctionCallMode::NonBlocking);
         }
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
@@ -272,11 +275,13 @@ pub async fn send_file(
                         if let Some(cb) = &callbacks.on_file_sent {
                             cb.call(Ok(FileSentEvent {
                                 message: "File sent successfully".to_string(),
-                                file: file_path.clone(),
-                                sop_instance_uid: file.sop_instance_uid.clone(),
-                                sop_class_uid: file.sop_class_uid.clone(),
-                                transfer_syntax: ts_uid_selected.to_string(),
-                                duration_seconds: elapsed.as_secs_f64(),
+                                data: Some(FileSentData {
+                                    file: file_path.clone(),
+                                    sop_instance_uid: file.sop_instance_uid.clone(),
+                                    sop_class_uid: file.sop_class_uid.clone(),
+                                    transfer_syntax: ts_uid_selected.to_string(),
+                                    duration_seconds: elapsed.as_secs_f64(),
+                                }),
                             }), ThreadsafeFunctionCallMode::NonBlocking);
                         }
                     }
@@ -322,11 +327,13 @@ pub async fn send_file(
                         if let Some(cb) = &callbacks.on_file_error {
                             cb.call(Ok(FileErrorEvent {
                                 message: format!("Failed to store file (status code {:04X}H)", status),
-                                file: file_path,
-                                error: format!("Status code {:04X}H", status),
-                                sop_instance_uid: Some(storage_sop_instance_uid.to_string()),
-                                sop_class_uid: Some(file.sop_class_uid.clone()),
-                                file_transfer_syntax: Some(file.file_transfer_syntax.clone()),
+                                data: Some(FileErrorData {
+                                    file: file_path,
+                                    error: format!("Status code {:04X}H", status),
+                                    sop_instance_uid: Some(storage_sop_instance_uid.to_string()),
+                                    sop_class_uid: Some(file.sop_class_uid.clone()),
+                                    file_transfer_syntax: Some(file.file_transfer_syntax.clone()),
+                                }),
                             }), ThreadsafeFunctionCallMode::NonBlocking);
                         }
                         

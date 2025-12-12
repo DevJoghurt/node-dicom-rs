@@ -14,8 +14,12 @@ const receiver = new StoreScp({
     verbose: true
 });
 
-receiver.addEventListener('OnFileStored', (data) => {
-    console.log('File received:', data.file);
+receiver.onFileStored((err, event) => {
+    if (err) {
+        console.error('Error:', err);
+        return;
+    }
+    console.log('File received:', event.data?.file);
 });
 
 receiver.listen();
@@ -23,112 +27,1157 @@ receiver.listen();
 
 ## Configuration Options
 
-### Network Settings
+The `StoreScp` constructor accepts a configuration object with the following options:
+
+### Required Options
+
+#### port
+
+**Type:** `number` (required)
+
+The TCP port number on which the SCP server will listen for incoming DICOM connections.
 
 ```typescript
-{
-    port: 4446,                    // TCP port to listen on (required)
-    callingAeTitle: 'STORE-SCP',   // Application Entity title (default: 'STORE-SCP')
-    strict: false,                 // Enforce strict PDU length limits (default: false)
-    maxPduLength: 16384            // Maximum PDU length in bytes (default: 16384)
+// Standard DICOM port
+port: 104
+
+// Common alternative ports
+port: 4446
+port: 11112
+port: 8042  // Orthanc default
+```
+
+**Default Port:** DICOM standard is `104`, but requires root/admin privileges on Linux/macOS. Most development and production deployments use ports above 1024.
+
+**Common Issues:**
+- **Permission denied**: Port 104 requires elevated privileges (`sudo` on Linux/macOS)
+- **Port already in use**: Another service is using the port
+- **Firewall blocking**: Ensure firewall allows incoming connections
+
+**Guidelines:**
+- Development: Use `4446` or `11112`
+- Production: Use `104` (with proper permissions) or your organization's standard
+- Docker: Map container port to host (e.g., `11112:104`)
+
+### Optional Options
+
+#### callingAeTitle
+
+**Type:** `string` (optional)  
+**Default:** `'STORE-SCP'`
+
+Your Application Entity (AE) Title - identifies this SCP server to remote SCU clients.
+
+```typescript
+callingAeTitle: 'HOSPITAL-PACS'
+callingAeTitle: 'RESEARCH-SCP'
+callingAeTitle: 'ARCHIVE-01'
+```
+
+**Constraints:**
+- Maximum 16 characters
+- Usually uppercase
+- No spaces (use hyphens or underscores)
+- Should be descriptive of the server's purpose
+
+**Use Cases:**
+- Remote SCU clients may require specific AE titles for routing
+- Helps with logging and identifying which server received data
+- Some sending systems validate AE titles before transmitting
+
+**Important:** This is YOUR AE title (the server), not the remote client's.
+
+#### outDir
+
+**Type:** `string` (optional, required for Filesystem storage)  
+**Default:** None
+
+The local filesystem directory where received DICOM files will be stored.
+
+```typescript
+// Relative path
+outDir: './dicom-storage'
+
+// Absolute path
+outDir: '/var/dicom/archive'
+
+// Per-environment
+outDir: process.env.DICOM_STORAGE_PATH || './dicom-storage'
+```
+
+**Directory Structure:**
+
+Files are automatically organized in a hierarchy:
+```
+{outDir}/
+  {StudyInstanceUID}/
+    {SeriesInstanceUID}/
+      {SOPInstanceUID}.dcm
+```
+
+Example:
+```
+./dicom-storage/
+  1.2.840.113619.2.55.3.../
+    1.2.840.113619.2.55.3.../
+      1.2.840.113619.2.55.3....dcm
+      1.2.840.113619.2.55.3....dcm
+```
+
+**Important Notes:**
+- Directory will be created automatically if it doesn't exist
+- Ensure sufficient disk space for expected volume
+- Consider mount points for large archives
+- Required when `storageBackend: 'Filesystem'`
+- Ignored when using S3 storage
+
+#### storageBackend
+
+**Type:** `'Filesystem' | 'S3'` (optional)  
+**Default:** `'Filesystem'`
+
+The storage backend to use for saving received DICOM files.
+
+```typescript
+// Local filesystem storage
+storageBackend: 'Filesystem'
+
+// S3-compatible object storage
+storageBackend: 'S3'
+```
+
+**Filesystem Storage:**
+- ✅ Simple setup, no dependencies
+- ✅ Fast for local development
+- ✅ Good for small to medium volumes
+- ❌ Limited scalability
+- ❌ Requires disk space management
+- ❌ No built-in redundancy
+
+**S3 Storage:**
+- ✅ Highly scalable
+- ✅ Built-in redundancy
+- ✅ Works with AWS S3, MinIO, etc.
+- ✅ No local disk space concerns
+- ❌ Requires S3 configuration
+- ❌ Network latency for storage operations
+- ❌ Additional costs (cloud storage)
+
+**When to Use:**
+- **Development**: Filesystem
+- **Production (small scale)**: Filesystem with proper backup
+- **Production (large scale)**: S3 for unlimited scalability
+- **Multi-server deployment**: S3 for shared storage
+
+#### s3Config
+
+**Type:** `object` (required when `storageBackend: 'S3'`)
+
+S3 storage configuration. Required when using S3 storage backend.
+
+```typescript
+s3Config: {
+    bucket: string,       // S3 bucket name (required)
+    accessKey: string,    // AWS access key ID (required)
+    secretKey: string,    // AWS secret access key (required)
+    endpoint: string,     // S3 endpoint URL (required)
+    region?: string       // AWS region (optional)
 }
 ```
 
-### Storage Settings
-
+**AWS S3 Example:**
 ```typescript
-{
-    outDir: './dicom-storage',     // Output directory for filesystem storage
-    storageBackend: 'Filesystem',  // 'Filesystem' | 'S3' (default: 'Filesystem')
-    storeWithFileMeta: false       // Include file meta header (default: false)
+s3Config: {
+    bucket: 'hospital-dicom-archive',
+    accessKey: process.env.AWS_ACCESS_KEY_ID,
+    secretKey: process.env.AWS_SECRET_ACCESS_KEY,
+    endpoint: 'https://s3.amazonaws.com',
+    region: 'us-east-1'
 }
 ```
 
-### Tag Extraction
-
+**MinIO Example:**
 ```typescript
-{
-    extractTags: [                 // DICOM tags to extract from received files
-        'PatientName',
-        'PatientID',
-        'StudyDate',
-        'Modality',
-        'SeriesDescription'
-    ],
-    extractCustomTags: [           // Custom/private tags with user-defined names
-        { tag: '00091001', name: 'CustomField' }
-    ],
-    groupingStrategy: 'ByScope'    // 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom'
+s3Config: {
+    bucket: 'dicom',
+    accessKey: 'minioadmin',
+    secretKey: 'minioadmin',
+    endpoint: 'http://localhost:9000',
+    region: 'us-east-1'  // MinIO requires a region, any value works
 }
 ```
 
-### SOP Class Configuration
+**DigitalOcean Spaces Example:**
+```typescript
+s3Config: {
+    bucket: 'my-dicom-space',
+    accessKey: process.env.DO_SPACES_KEY,
+    secretKey: process.env.DO_SPACES_SECRET,
+    endpoint: 'https://nyc3.digitaloceanspaces.com',
+    region: 'nyc3'
+}
+```
 
-Control which types of DICOM objects your SCP accepts:
+**Security Best Practices:**
+- Never hardcode credentials in source code
+- Use environment variables or secret management
+- Use IAM roles when running on AWS EC2
+- Restrict S3 bucket access with appropriate policies
+- Enable bucket encryption at rest
+
+#### storeWithFileMeta
+
+**Type:** `boolean` (optional)  
+**Default:** `false`
+
+Whether to include DICOM File Meta Information header when storing files.
+
+```typescript
+// Without file meta (default) - just dataset
+storeWithFileMeta: false
+
+// With file meta - complete DICOM file
+storeWithFileMeta: true
+```
+
+**Without File Meta (false):**
+- Stores only the DICOM dataset
+- Smaller file size (~128 bytes less)
+- Can be re-wrapped with new meta later
+- Common for archival storage
+
+**With File Meta (true):**
+- Stores complete DICOM file including header
+- Includes Transfer Syntax UID, Implementation Class UID, etc.
+- Ready for immediate re-transmission
+- Preserves original file structure
+
+**When to Enable:**
+- Need to preserve exact file structure
+- Files will be re-transmitted without modification
+- Compatibility with tools that expect file meta
+
+**When to Disable (default):**
+- Optimize storage space
+- Only care about DICOM dataset
+- Will process/transform data before re-transmission
+
+#### strict
+
+**Type:** `boolean` (optional)  
+**Default:** `false`
+
+Enforce strict DICOM protocol compliance for PDU length limits.
+
+```typescript
+// Relaxed mode (default) - accept larger PDUs
+strict: false
+
+// Strict mode - enforce maximum PDU length
+strict: true
+```
+
+**Relaxed Mode (false, default):**
+- Accepts PDUs slightly over the negotiated maximum
+- More compatible with non-compliant implementations
+- Recommended for interoperability
+
+**Strict Mode (true):**
+- Rejects PDUs that exceed negotiated maximum
+- Strictly follows DICOM standard
+- May cause connection failures with non-compliant senders
+
+**When to Enable:**
+- Testing DICOM standard compliance
+- Security-critical environments
+- When specifically requested
+
+**When to Disable (default):**
+- Maximum compatibility
+- Working with diverse DICOM implementations
+- Production environments
+
+#### maxPduLength
+
+**Type:** `number` (optional)  
+**Default:** `16384` (16 KB)
+
+Maximum Protocol Data Unit (PDU) size in bytes that the server will accept.
+
+```typescript
+// Small PDU (default)
+maxPduLength: 16384    // 16 KB
+
+// Medium PDU
+maxPduLength: 32768    // 32 KB
+
+// Large PDU
+maxPduLength: 65536    // 64 KB
+
+// Maximum PDU
+maxPduLength: 131072   // 128 KB
+```
+
+**Range:** Typically `16384` to `131072` bytes
+
+**Guidelines:**
+- **Default (16 KB)**: Works with all implementations
+- **32 KB**: Good balance for most networks
+- **64-128 KB**: Fast networks, high-performance needs
+- Larger PDU = faster transfers (if network supports it)
+- Must be compatible with sending SCU
+
+**Performance Impact:**
+
+Larger PDU can improve throughput:
+```typescript
+// Receiving 1000 files from same sender
+maxPduLength: 16384   // Baseline
+maxPduLength: 32768   // ~30% faster
+maxPduLength: 65536   // ~45% faster (on fast LAN)
+```
+
+**Important Notes:**
+- Remote SCU must support the PDU size
+- Some older implementations only support 16 KB
+- Network must handle larger packets without fragmentation
+
+#### verbose
+
+**Type:** `boolean` (optional)  
+**Default:** `false`
+
+Enable detailed logging of DICOM protocol operations and server activity.
+
+```typescript
+// Production: minimal logging
+verbose: false
+
+// Development/debugging: detailed logging
+verbose: true
+```
+
+**When enabled, logs include:**
+- Server startup and listening status
+- Incoming association requests
+- AE title validation
+- Presentation context negotiation
+- Transfer syntax acceptance/rejection
+- File reception progress
+- Storage operations
+- Study completion events
+- Error details and stack traces
+
+**Example output:**
+```
+[StoreScp] Server listening on 0.0.0.0:4446
+[StoreScp] Association request from 192.168.1.50
+[StoreScp] Calling AE: SENDER-SCU, Called AE: HOSPITAL-PACS
+[StoreScp] Presentation context: CT Image Storage - Accepted
+[StoreScp] Transfer syntax: Implicit VR Little Endian - Accepted
+[StoreScp] Receiving file: 1.2.840.113619...
+[StoreScp] Stored: ./dicom-storage/1.2.840.../1.2.840.../1.2.840....dcm
+```
+
+**Use Cases:**
+- Development and testing
+- Troubleshooting connection issues
+- Understanding why files are rejected
+- Debugging storage backend issues
+- Monitoring association activity
+
+**Note:** Verbose output may contain sensitive information (AE titles, patient data in tags). Don't enable in production unless necessary for troubleshooting.
+
+#### extractTags
+
+**Type:** `string[]` (optional)  
+**Default:** `[]` (no tags extracted)
+
+List of DICOM tag names to extract from received files and include in events.
+
+```typescript
+extractTags: [
+    // Patient tags
+    'PatientName',
+    'PatientID',
+    'PatientBirthDate',
+    'PatientSex',
+    
+    // Study tags
+    'StudyDate',
+    'StudyTime',
+    'StudyDescription',
+    'AccessionNumber',
+    
+    // Series tags
+    'Modality',
+    'SeriesNumber',
+    'SeriesDescription',
+    'BodyPartExamined',
+    
+    // Instance tags
+    'InstanceNumber',
+    'SliceLocation',
+    'SliceThickness',
+    
+    // Equipment tags
+    'Manufacturer',
+    'ManufacturerModelName',
+    'SoftwareVersions'
+]
+```
+
+**Available Tag Names:**
+
+Use standard DICOM tag names from the helper:
+```typescript
+import { getAvailableTagNames } from '@nuxthealth/node-dicom';
+
+const tagNames = getAvailableTagNames();
+console.log(tagNames);  // Lists all ~500 available tags
+```
+
+**Common Tag Categories:**
+- **Patient**: PatientName, PatientID, PatientBirthDate, PatientSex, PatientAge
+- **Study**: StudyDate, StudyTime, StudyDescription, AccessionNumber, StudyID
+- **Series**: Modality, SeriesNumber, SeriesDescription, BodyPartExamined
+- **Instance**: InstanceNumber, SliceLocation, ImagePositionPatient, WindowCenter
+- **Equipment**: Manufacturer, ManufacturerModelName, DeviceSerialNumber
+
+**Performance Considerations:**
+- Each tag requires parsing and extraction
+- More tags = slightly slower processing
+- Extract only tags you actually need
+- For archival without processing, leave empty
+
+**Extracted tags appear in events:**
+```typescript
+receiver.onFileStored((err, event) => {
+    console.log(event.data?.tags?.PatientName);
+    console.log(event.data?.tags?.StudyDate);
+});
+```
+
+#### extractCustomTags
+
+**Type:** `CustomTag[]` (optional)  
+**Default:** `[]` (no custom tags)
+
+List of private or vendor-specific DICOM tags to extract with user-defined names.
+
+```typescript
+import { createCustomTag } from '@nuxthealth/node-dicom';
+
+extractCustomTags: [
+    createCustomTag('00091001', 'VendorField1'),
+    createCustomTag('00091002', 'VendorField2'),
+    { tag: '00191010', name: 'PrivateTag1' }  // Or inline
+]
+```
+
+**Tag Format:**
+- Tag group and element as 8-character hex string
+- Example: `'00091001'` = Group 0009, Element 1001
+- Must be valid DICOM tag hex format
+
+**Use Cases:**
+- Extracting proprietary vendor tags (e.g., Siemens, GE private tags)
+- Custom institutional tags
+- Research protocol-specific tags
+- Non-standard extensions
+
+**Example with vendor tags:**
+```typescript
+extractCustomTags: [
+    // GE private tags
+    createCustomTag('00091001', 'GE_PrivateCreator'),
+    createCustomTag('00091002', 'GE_SeriesType'),
+    
+    // Siemens private tags
+    createCustomTag('00191010', 'Siemens_Protocol'),
+    createCustomTag('00291010', 'Siemens_Technique')
+]
+```
+
+**Extracted custom tags appear in events:**
+```typescript
+receiver.onFileStored((err, event) => {
+    console.log(event.data?.tags?.VendorField1);
+    console.log(event.data?.tags?.GE_PrivateCreator);
+});
+```
+
+**Important Notes:**
+- Tag names must be unique
+- Invalid tags are silently ignored
+- Check vendor documentation for private tag meanings
+- Not all files will have private tags
+
+#### studyTimeout
+
+**Type:** `number` (optional)  
+**Default:** `30` (seconds)
+
+Number of seconds to wait after the last file of a study before triggering the `OnStudyCompleted` event.
+
+```typescript
+// Quick timeout for testing
+studyTimeout: 10
+
+// Default timeout
+studyTimeout: 30
+
+// Long timeout for slow senders
+studyTimeout: 60
+
+// Very long timeout for batch uploads
+studyTimeout: 300  // 5 minutes
+```
+
+**How It Works:**
+
+1. First file of study arrives → timer starts
+2. Each new file in the study → timer resets
+3. No new files for `studyTimeout` seconds → `OnStudyCompleted` fires
+
+**Guidelines:**
+- **Fast modalities (CR, DR)**: 10-30 seconds
+- **CT/MR with few slices**: 30-60 seconds
+- **CT/MR with many slices**: 60-120 seconds
+- **Batch/delayed uploads**: 120-300 seconds
+- **High latency networks**: Increase timeout
+
+**Factors to Consider:**
+- Network speed between sender and receiver
+- Number of instances in typical studies
+- Sending system behavior (sequential vs concurrent)
+- Whether studies are sent in batches
+
+**Example Scenarios:**
+```typescript
+// Emergency radiology - fast turnaround needed
+studyTimeout: 15
+
+// General radiology - balanced
+studyTimeout: 30
+
+// Research/batch processing - can wait
+studyTimeout: 120
+```
+
+**Important Notes:**
+- Timeout is per study (tracked by StudyInstanceUID)
+- Multiple studies can have independent timers
+- Very short timeouts may cause premature triggers
+- Very long timeouts delay downstream processing
+
+**Important Notes:**
+- Timeout is per study (tracked by StudyInstanceUID)
+- Multiple studies can have independent timers
+- Very short timeouts may cause premature triggers
+- Very long timeouts delay downstream processing
+
+#### abstractSyntaxMode
+
+**Type:** `'AllStorage' | 'All' | 'Custom'` (optional)  
+**Default:** `'AllStorage'`
+
+Controls which SOP Class types (DICOM object types) the server will accept.
+
+```typescript
+// Accept all Storage SOP Classes (~200 classes)
+abstractSyntaxMode: 'AllStorage'
+
+// Accept ALL SOP Classes including non-storage (Verification, Query/Retrieve, etc.)
+abstractSyntaxMode: 'All'
+
+// Accept only specific SOP Classes (defined in abstractSyntaxes)
+abstractSyntaxMode: 'Custom'
+```
+
+**AllStorage Mode:**
+- ✅ Accepts all imaging and storage SOP classes
+- ✅ Works with any modality (CT, MR, US, etc.)
+- ✅ Includes specialized storage (SR, RT, etc.)
+- ✅ Recommended for general-purpose PACS
+- ❌ Cannot filter by specific modality
+
+**All Mode:**
+- ✅ Accepts everything (storage + non-storage)
+- ✅ Maximum compatibility
+- ❌ May accept unexpected SOP classes
+- ❌ Rarely needed for storage servers
+
+**Custom Mode:**
+- ✅ Fine-grained control over accepted types
+- ✅ Can limit to specific modalities only
+- ✅ Better security and validation
+- ⚠️ Requires defining `abstractSyntaxes` list
+
+**When to Use Each:**
+
+```typescript
+// General PACS - accept everything
+abstractSyntaxMode: 'AllStorage'
+
+// Specialized archive - only CT and MR
+abstractSyntaxMode: 'Custom'
+abstractSyntaxes: [...sopClasses.ct, ...sopClasses.mr]
+
+// Modality-specific - only ultrasound
+abstractSyntaxMode: 'Custom'
+abstractSyntaxes: sopClasses.ultrasound
+
+// Research project - only specific SOP classes
+abstractSyntaxMode: 'Custom'
+abstractSyntaxes: ['1.2.840.10008.5.1.4.1.1.2']  // CT Image Storage
+```
+
+#### abstractSyntaxes
+
+**Type:** `string[]` (required when `abstractSyntaxMode: 'Custom'`)
+
+List of SOP Class UIDs to accept when in Custom mode.
 
 ```typescript
 import { getCommonSopClasses } from '@nuxthealth/node-dicom';
 
 const sopClasses = getCommonSopClasses();
 
-{
-    abstractSyntaxMode: 'Custom',  // 'AllStorage' | 'All' | 'Custom'
-    abstractSyntaxes: [            // When mode is 'Custom'
-        ...sopClasses.ct,          // CT Image Storage
-        ...sopClasses.mr,          // MR Image Storage
-        ...sopClasses.ultrasound   // Ultrasound Image Storage
-    ]
-}
+// Accept only CT and MR
+abstractSyntaxes: [
+    ...sopClasses.ct,
+    ...sopClasses.mr
+]
+
+// Accept all imaging
+abstractSyntaxes: sopClasses.allImaging
+
+// Accept specific classes by UID
+abstractSyntaxes: [
+    '1.2.840.10008.5.1.4.1.1.2',    // CT Image Storage
+    '1.2.840.10008.5.1.4.1.1.4',    // MR Image Storage
+    '1.2.840.10008.5.1.4.1.1.6.1'   // Ultrasound Image Storage
+]
 ```
 
-Available SOP Class categories:
-- `ct` - CT imaging (2 classes)
-- `mr` - MR imaging (2 classes)
-- `ultrasound` - Ultrasound (2 classes)
-- `pet` - PET imaging (3 classes)
-- `xray` - X-Ray (3 classes)
-- `mammography` - Mammography (5 classes)
-- `secondaryCapture` - Secondary Capture (4 classes)
-- `radiationTherapy` - RT objects (4 classes)
-- `documents` - Encapsulated documents (4 classes)
-- `structuredReports` - SR documents (3 classes)
-- `allImaging` - All imaging types (17 classes)
-- `all` - Everything (33 classes)
+**Available SOP Class Helper Categories:**
 
-### Transfer Syntax Configuration
+```typescript
+const sopClasses = getCommonSopClasses();
 
-Control which transfer syntaxes (compression formats) are accepted:
+// Imaging modalities
+sopClasses.ct              // CT (2 classes)
+sopClasses.mr              // MR (2 classes)
+sopClasses.ultrasound      // US (2 classes)
+sopClasses.pet             // PET (3 classes)
+sopClasses.xray            // X-Ray (3 classes)
+sopClasses.mammography     // Mammography (5 classes)
+
+// Specialized
+sopClasses.secondaryCapture     // Screen captures (4 classes)
+sopClasses.radiationTherapy     // RT planning (4 classes)
+sopClasses.documents            // Encapsulated PDFs, etc. (4 classes)
+sopClasses.structuredReports    // SR documents (3 classes)
+
+// Combinations
+sopClasses.allImaging      // All imaging (17 classes)
+sopClasses.all             // Everything (33 classes)
+```
+
+**Common Patterns:**
+
+```typescript
+// Radiology department - all imaging
+abstractSyntaxes: sopClasses.allImaging
+
+// CT scanner - CT only
+abstractSyntaxes: sopClasses.ct
+
+// Multi-modality - CT, MR, US
+abstractSyntaxes: [
+    ...sopClasses.ct,
+    ...sopClasses.mr,
+    ...sopClasses.ultrasound
+]
+
+// Oncology - PET/CT with RT planning
+abstractSyntaxes: [
+    ...sopClasses.pet,
+    ...sopClasses.ct,
+    ...sopClasses.radiationTherapy
+]
+
+// Breast imaging - mammography + US
+abstractSyntaxes: [
+    ...sopClasses.mammography,
+    ...sopClasses.ultrasound
+]
+```
+
+**SOP Class Rejection:**
+
+If a sender tries to send an unsupported SOP class:
+- Association is established
+- Presentation context is rejected
+- Sender receives rejection status
+- Connection remains open for supported SOP classes
+
+**Finding SOP Class UIDs:**
+
+```typescript
+// List all available classes
+const sopClasses = getCommonSopClasses();
+console.log(JSON.stringify(sopClasses, null, 2));
+
+// Or look up in DICOM standard
+// Part 4: Service-Object Pair (SOP) Class Definitions
+```
+
+#### transferSyntaxMode
+
+**Type:** `'All' | 'UncompressedOnly' | 'Custom'` (optional)  
+**Default:** `'All'`
+
+Controls which Transfer Syntaxes (compression/encoding formats) the server will accept.
+
+```typescript
+// Accept all transfer syntaxes (compressed + uncompressed)
+transferSyntaxMode: 'All'
+
+// Accept only uncompressed (Implicit/Explicit VR Little Endian)
+transferSyntaxMode: 'UncompressedOnly'
+
+// Accept specific transfer syntaxes (defined in transferSyntaxes)
+transferSyntaxMode: 'Custom'
+```
+
+**All Mode (default):**
+- ✅ Maximum compatibility
+- ✅ Accepts compressed and uncompressed
+- ✅ No transcoding needed
+- ✅ Recommended for general use
+- ❌ May receive unexpected encodings
+
+**UncompressedOnly Mode:**
+- ✅ Only accepts standard uncompressed formats
+- ✅ Fastest processing (no decompression)
+- ✅ Consistent format for storage
+- ❌ Sender must transcode if needed
+- ❌ May reject valid compressed images
+
+**Custom Mode:**
+- ✅ Fine-grained control over accepted formats
+- ✅ Can limit to specific compression types
+- ✅ Better for specialized workflows
+- ⚠️ Requires defining `transferSyntaxes` list
+
+**When to Use Each:**
+
+```typescript
+// General PACS - accept everything
+transferSyntaxMode: 'All'
+
+// Fast processing - uncompressed only
+transferSyntaxMode: 'UncompressedOnly'
+
+// Specific formats - uncompressed + JPEG 2000
+transferSyntaxMode: 'Custom'
+transferSyntaxes: [
+    ...transferSyntaxes.uncompressed,
+    ...transferSyntaxes.jpeg2000
+]
+```
+
+#### transferSyntaxes
+
+**Type:** `string[]` (required when `transferSyntaxMode: 'Custom'`)
+
+List of Transfer Syntax UIDs to accept when in Custom mode.
 
 ```typescript
 import { getCommonTransferSyntaxes } from '@nuxthealth/node-dicom';
 
 const transferSyntaxes = getCommonTransferSyntaxes();
 
-{
-    transferSyntaxMode: 'Custom',  // 'All' | 'UncompressedOnly' | 'Custom'
-    transferSyntaxes: [            // When mode is 'Custom'
-        ...transferSyntaxes.uncompressed,  // Uncompressed formats
-        ...transferSyntaxes.jpeg           // JPEG compression
-    ]
-}
+// Accept uncompressed + JPEG
+transferSyntaxes: [
+    ...transferSyntaxes.uncompressed,
+    ...transferSyntaxes.jpeg
+]
+
+// Accept all compressed formats
+transferSyntaxes: transferSyntaxes.allCompressed
+
+// Accept specific syntaxes by UID
+transferSyntaxes: [
+    '1.2.840.10008.1.2',      // Implicit VR Little Endian
+    '1.2.840.10008.1.2.1',    // Explicit VR Little Endian
+    '1.2.840.10008.1.2.4.90'  // JPEG 2000 Lossless
+]
 ```
 
-Available transfer syntax categories:
-- `uncompressed` - Implicit/Explicit VR Little Endian (3 syntaxes)
-- `jpeg` - JPEG variants (4 syntaxes)
-- `jpegLs` - JPEG-LS (2 syntaxes)
-- `jpeg2000` - JPEG 2000 (2 syntaxes)
-- `rle` - RLE Lossless (1 syntax)
-- `mpeg` - MPEG video (4 syntaxes)
-- `allCompressed` - All compressed (13 syntaxes)
-- `all` - Everything (17 syntaxes)
-
-### Study Completion
+**Available Transfer Syntax Helper Categories:**
 
 ```typescript
-{
-    studyTimeout: 30  // Seconds to wait before OnStudyCompleted event (default: 30)
+const transferSyntaxes = getCommonTransferSyntaxes();
+
+// Uncompressed
+transferSyntaxes.uncompressed  // Implicit/Explicit VR (3 syntaxes)
+
+// Compressed formats
+transferSyntaxes.jpeg          // JPEG variants (4 syntaxes)
+transferSyntaxes.jpegLs        // JPEG-LS (2 syntaxes)
+transferSyntaxes.jpeg2000      // JPEG 2000 (2 syntaxes)
+transferSyntaxes.rle           // RLE Lossless (1 syntax)
+transferSyntaxes.mpeg          // MPEG video (4 syntaxes)
+
+// Combinations
+transferSyntaxes.allCompressed // All compressed (13 syntaxes)
+transferSyntaxes.all           // Everything (17 syntaxes)
+```
+
+**Common Transfer Syntaxes Table:**
+
+| Name | UID | Description | Use Case |
+|------|-----|-------------|----------|
+| Implicit VR Little Endian | 1.2.840.10008.1.2 | Uncompressed, implicit | Default, widest compatibility |
+| Explicit VR Little Endian | 1.2.840.10008.1.2.1 | Uncompressed, explicit | Standard uncompressed |
+| Deflated Explicit VR | 1.2.840.10008.1.2.1.99 | ZIP compression | Lossless compression |
+| JPEG Baseline | 1.2.840.10008.1.2.4.50 | JPEG lossy 8-bit | Web/preview |
+| JPEG Lossless | 1.2.840.10008.1.2.4.70 | JPEG lossless | Diagnostic quality |
+| JPEG 2000 Lossless | 1.2.840.10008.1.2.4.90 | JP2 lossless | High quality |
+| JPEG 2000 Lossy | 1.2.840.10008.1.2.4.91 | JP2 lossy | Compressed archives |
+| RLE Lossless | 1.2.840.10008.1.2.5 | RLE compression | Medical images |
+
+**Common Patterns:**
+
+```typescript
+// Accept all formats (default)
+transferSyntaxMode: 'All'
+
+// Only uncompressed for fast processing
+transferSyntaxMode: 'UncompressedOnly'
+
+// Uncompressed + lossless compression
+transferSyntaxes: [
+    ...transferSyntaxes.uncompressed,
+    '1.2.840.10008.1.2.4.70',  // JPEG Lossless
+    '1.2.840.10008.1.2.4.90'   // JPEG 2000 Lossless
+]
+
+// Web-friendly formats
+transferSyntaxes: [
+    ...transferSyntaxes.uncompressed,
+    ...transferSyntaxes.jpeg
+]
+```
+
+**Transfer Syntax Rejection:**
+
+If a sender tries to use an unsupported transfer syntax:
+- Association is established
+- Presentation context is rejected
+- Sender may retry with different transfer syntax (if capable)
+- Some senders will transcode automatically
+
+**Performance Considerations:**
+- Uncompressed = fastest processing
+- Compressed = smaller storage, slower processing
+- Automatic decompression happens transparently
+- Some compressed formats require additional libraries
+
+**Performance Considerations:**
+- Uncompressed = fastest processing
+- Compressed = smaller storage, slower processing
+- Automatic decompression happens transparently
+- Some compressed formats require additional libraries
+
+### Complete Configuration Examples
+
+```typescript
+import { StoreScp, getCommonSopClasses, getCommonTransferSyntaxes } from '@nuxthealth/node-dicom';
+
+const sopClasses = getCommonSopClasses();
+const transferSyntaxes = getCommonTransferSyntaxes();
+
+// Minimal configuration (development)
+const minimalReceiver = new StoreScp({
+    port: 4446,
+    outDir: './dicom-storage'
+});
+
+// Standard configuration (production)
+const standardReceiver = new StoreScp({
+    port: 11112,
+    callingAeTitle: 'HOSPITAL-PACS',
+    outDir: '/var/dicom/archive',
+    storageBackend: 'Filesystem',
+    verbose: false,
+    extractTags: [
+        'PatientName', 'PatientID',
+        'StudyDate', 'StudyDescription',
+        'Modality', 'SeriesDescription'
+    ],
+    studyTimeout: 30
+});
+
+// High-performance configuration (S3 storage)
+const s3Receiver = new StoreScp({
+    port: 104,
+    callingAeTitle: 'CLOUD-PACS',
+    storageBackend: 'S3',
+    s3Config: {
+        bucket: process.env.S3_BUCKET,
+        accessKey: process.env.AWS_ACCESS_KEY_ID,
+        secretKey: process.env.AWS_SECRET_ACCESS_KEY,
+        endpoint: 'https://s3.amazonaws.com',
+        region: 'us-east-1'
+    },
+    maxPduLength: 65536,
+    extractTags: [
+        'PatientName', 'PatientID', 'PatientBirthDate',
+        'StudyDate', 'StudyDescription', 'AccessionNumber',
+        'Modality', 'SeriesDescription', 'SeriesNumber',
+        'InstanceNumber'
+    ],
+    studyTimeout: 60,
+    verbose: false
+});
+
+// Modality-specific (CT/MR only)
+const ctMrReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'CT-MR-SCP',
+    outDir: './dicom-storage',
+    abstractSyntaxMode: 'Custom',
+    abstractSyntaxes: [
+        ...sopClasses.ct,
+        ...sopClasses.mr
+    ],
+    transferSyntaxMode: 'All',
+    extractTags: [
+        'PatientName', 'PatientID',
+        'StudyDate', 'StudyDescription',
+        'Modality', 'SeriesDescription',
+        'SliceThickness', 'KVP', 'Exposure'
+    ],
+    studyTimeout: 45
+});
+
+// Uncompressed-only (fast processing)
+const uncompressedReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'FAST-SCP',
+    outDir: './dicom-storage',
+    transferSyntaxMode: 'UncompressedOnly',
+    maxPduLength: 65536,
+    extractTags: ['PatientName', 'PatientID', 'StudyDate', 'Modality'],
+    studyTimeout: 20,
+    verbose: false
+});
+
+// Custom transfer syntaxes (uncompressed + JPEG 2000)
+const customTransferReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'CUSTOM-SCP',
+    outDir: './dicom-storage',
+    transferSyntaxMode: 'Custom',
+    transferSyntaxes: [
+        ...transferSyntaxes.uncompressed,
+        ...transferSyntaxes.jpeg2000
+    ],
+    extractTags: ['PatientName', 'StudyDate', 'Modality']
+});
+
+// Research configuration (with custom tags)
+const researchReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'RESEARCH-SCP',
+    outDir: './research-data',
+    extractTags: [
+        'PatientID', 'StudyDate', 'Modality',
+        'SeriesDescription', 'InstanceNumber'
+    ],
+    extractCustomTags: [
+        { tag: '00091001', name: 'ProtocolName' },
+        { tag: '00191010', name: 'SequenceVariant' }
+    ],
+    abstractSyntaxMode: 'Custom',
+    abstractSyntaxes: sopClasses.allImaging,
+    studyTimeout: 90,
+    verbose: true
+});
+
+// Debugging configuration
+const debugReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'DEBUG-SCP',
+    outDir: './debug-storage',
+    storeWithFileMeta: true,  // Preserve exact file structure
+    verbose: true,             // See all protocol details
+    strict: false,             // Relaxed for compatibility
+    maxPduLength: 16384,
+    extractTags: ['PatientName', 'PatientID', 'StudyDate', 'Modality'],
+    studyTimeout: 60
+});
+```
+
+### Configuration Best Practices
+
+1. **Start simple, add complexity as needed**
+   ```typescript
+   // Good starting point
+   const receiver = new StoreScp({
+       port: 4446,
+       outDir: './dicom-storage'
+   });
+   ```
+
+2. **Extract only needed tags**
+   ```typescript
+   // Don't extract everything
+   extractTags: ['PatientName', 'StudyDate', 'Modality']  // Only what you need
+   ```
+
+3. **Use environment variables for sensitive data**
+   ```typescript
+   s3Config: {
+       bucket: process.env.S3_BUCKET,
+       accessKey: process.env.AWS_ACCESS_KEY_ID,
+       secretKey: process.env.AWS_SECRET_ACCESS_KEY,
+       endpoint: process.env.S3_ENDPOINT
+   }
+   ```
+
+4. **Set appropriate timeouts**
+   ```typescript
+   // Fast modalities (CR, DR)
+   studyTimeout: 15
+   
+   // Standard cross-sectional (CT, MR)
+   studyTimeout: 30
+   
+   // Large studies or slow networks
+   studyTimeout: 60
+   ```
+
+5. **Use S3 for production scale**
+   ```typescript
+   // Development
+   storageBackend: 'Filesystem'
+   
+   // Production with high volume
+   storageBackend: 'S3'
+   ```
+
+6. **Enable verbose only when needed**
+   ```typescript
+   // Production
+   verbose: false
+   
+   // Development/troubleshooting
+   verbose: true
+   ```
+
+7. **Restrict SOP classes for specialized systems**
+   ```typescript
+   // General PACS - accept all
+   abstractSyntaxMode: 'AllStorage'
+   
+   // Specialized (e.g., CT archive)
+   abstractSyntaxMode: 'Custom'
+   abstractSyntaxes: sopClasses.ct
+   ```
+
+8. **Consider storage format needs**
+   ```typescript
+   // Archival - no file meta needed
+   storeWithFileMeta: false
+   
+   // Re-transmission - preserve structure
+   storeWithFileMeta: true
+   ```
+
+### Troubleshooting Configuration Issues
+
+**Server Won't Start**
+```typescript
+// Check: Port permissions (104 requires sudo)
+port: 4446  // Use port > 1024
+
+// Check: Port already in use
+// Run: netstat -an | grep 4446
+```
+
+**Files Not Stored**
+```typescript
+// Check: outDir exists and is writable
+outDir: './dicom-storage'  // Verify permissions
+
+// Check: Disk space available
+// Run: df -h
+```
+
+**Connection Rejected**
+```typescript
+// Check: Calling AE title matches sender expectations
+callingAeTitle: 'EXPECTED-NAME'
+
+// Enable verbose to see rejection reason
+verbose: true
+```
+
+**Wrong SOP Classes Accepted/Rejected**
+```typescript
+// Verify mode and syntaxes
+abstractSyntaxMode: 'Custom'
+abstractSyntaxes: [...sopClasses.ct]  // Check this matches intent
+
+// Enable verbose to see negotiation
+verbose: true
+```
+
+**Study Completion Not Firing**
+```typescript
+// Increase timeout if studies are large
+studyTimeout: 60  // or higher
+
+// Check: Are files from same StudyInstanceUID?
+// Enable verbose to see study grouping
+verbose: true
+```
+
+**S3 Storage Failing**
+```typescript
+// Verify credentials
+s3Config: {
+    bucket: 'correct-bucket-name',
+    accessKey: process.env.AWS_ACCESS_KEY_ID,  // Check env vars set
+    secretKey: process.env.AWS_SECRET_ACCESS_KEY,
+    endpoint: 'https://s3.amazonaws.com',  // Correct endpoint
+    region: 'us-east-1'  // Correct region
 }
+
+// Test S3 access separately
+// Enable verbose to see S3 errors
+verbose: true
+```
+
+**Tags Not Extracted**
+```typescript
+// Check: Tag names are correct
+extractTags: ['PatientName']  // Not 'patientname'
+
+// Check: Tags exist in files
+// Some tags are optional in DICOM
+
+// Use getAvailableTagNames() to see valid names
+import { getAvailableTagNames } from '@nuxthealth/node-dicom';
+console.log(getAvailableTagNames());
+```
+
+console.log(getAvailableTagNames());
 ```
 
 ## Events
@@ -138,8 +1187,12 @@ Available transfer syntax categories:
 Triggered when the server starts listening.
 
 ```typescript
-receiver.addEventListener('OnServerStarted', (data) => {
-    console.log(`Server started on port ${data.port}`);
+receiver.onServerStarted((err, event) => {
+    if (err) {
+        console.error('Error:', err);
+        return;
+    }
+    console.log('Server started:', event.message);
 });
 ```
 
@@ -148,77 +1201,50 @@ receiver.addEventListener('OnServerStarted', (data) => {
 Triggered when each DICOM file is received and stored.
 
 ```typescript
-receiver.addEventListener('OnFileStored', (data) => {
+receiver.onFileStored((err, event) => {
+    if (err) {
+        console.error('Error:', err);
+        return;
+    }
+    
+    const data = event.data;
+    if (!data) return;
+    
     console.log('File:', data.file);
-    console.log('SOP Instance UID:', data.sopInstanceUID);
-    console.log('SOP Class UID:', data.sopClassUID);
-    console.log('Transfer Syntax:', data.transferSyntaxUID);
-    console.log('Study UID:', data.studyInstanceUID);
-    console.log('Series UID:', data.seriesInstanceUID);
-    console.log('Extracted tags:', data.tags);
+    console.log('SOP Instance UID:', data.sopInstanceUid);
+    console.log('SOP Class UID:', data.sopClassUid);
+    console.log('Transfer Syntax:', data.transferSyntaxUid);
+    console.log('Study UID:', data.studyInstanceUid);
+    console.log('Series UID:', data.seriesInstanceUid);
+    
+    // Tags are always flat for simple, direct access
+    if (data.tags) {
+        console.log('Patient:', data.tags.PatientName);
+        console.log('Study Date:', data.tags.StudyDate);
+        console.log('Modality:', data.tags.Modality);
+    }
 });
 ```
 
-Event data structure depends on `groupingStrategy`:
-
-**ByScope** (default):
+Event data structure (flat tags):
 ```typescript
 {
     file: "path/to/file.dcm",
-    sopInstanceUID: "1.2.3...",
-    sopClassUID: "1.2.840...",
-    transferSyntaxUID: "1.2.840...",
-    studyInstanceUID: "1.2.3...",
-    seriesInstanceUID: "1.2.3...",
-    tags: {
-        patient: {
-            PatientName: "DOE^JOHN",
-            PatientID: "12345"
-        },
-        study: {
-            StudyDate: "20231201",
-            StudyDescription: "CT Chest"
-        },
-        series: {
-            Modality: "CT",
-            SeriesDescription: "Chest with contrast"
-        },
-        instance: {
-            InstanceNumber: "1",
-            SliceThickness: "5.0"
-        }
-    }
-}
-```
-
-**Flat**:
-```typescript
-{
-    file: "path/to/file.dcm",
-    // ... UIDs ...
-    tags: {
+    sopInstanceUid: "1.2.3...",
+    sopClassUid: "1.2.840...",
+    transferSyntaxUid: "1.2.840...",
+    studyInstanceUid: "1.2.3...",
+    seriesInstanceUid: "1.2.3...",
+    tags: {                        // All extracted tags in flat structure
         PatientName: "DOE^JOHN",
         PatientID: "12345",
         StudyDate: "20231201",
-        Modality: "CT"
-    }
-}
-```
-
-**StudyLevel**:
-```typescript
-{
-    file: "path/to/file.dcm",
-    // ... UIDs ...
-    tags: {
-        study_level: {
-            PatientName: "DOE^JOHN",
-            StudyDate: "20231201"
-        },
-        instance_level: {
-            Modality: "CT",
-            InstanceNumber: "1"
-        }
+        StudyDescription: "CT Chest",
+        Modality: "CT",
+        SeriesDescription: "Chest with contrast",
+        InstanceNumber: "1",
+        SliceThickness: "5.0",
+        Manufacturer: "GE"         // Equipment tags also included
     }
 }
 ```
@@ -228,44 +1254,65 @@ Event data structure depends on `groupingStrategy`:
 Triggered when no new files are received for a study after the timeout period.
 
 ```typescript
-receiver.addEventListener('OnStudyCompleted', (study) => {
-    console.log(`Study ${study.study_instance_uid} completed`);
+receiver.onStudyCompleted((err, event) => {
+    if (err) {
+        console.error('Error:', err);
+        return;
+    }
+    
+    const study = event.data?.study;
+    if (!study) return;
+    
+    console.log(`Study ${study.studyInstanceUid} completed`);
+    console.log(`Patient: ${study.tags?.PatientName}`);
+    console.log(`Study Date: ${study.tags?.StudyDate}`);
     console.log(`${study.series.length} series`);
     
     for (const series of study.series) {
-        console.log(`  Series ${series.series_instance_uid}: ${series.instances.length} instances`);
+        console.log(`  Series ${series.seriesInstanceUid}`);
+        console.log(`  Modality: ${series.tags?.Modality}`);
+        console.log(`  ${series.instances.length} instances`);
         
         for (const instance of series.instances) {
-            console.log(`    ${instance.file}`);
+            console.log(`    Instance ${instance.tags?.InstanceNumber}: ${instance.file}`);
         }
     }
 });
 ```
 
-Event data structure (with `ByScope` grouping):
+Event data structure (hierarchical with flat tags at each level):
 ```typescript
 {
-    study_instance_uid: "1.2.3...",
-    tags: {                        // Study-level tags (Patient + Study)
+    studyInstanceUid: "1.2.3...",
+    tags: {                        // Patient + Study level tags only
         PatientName: "DOE^JOHN",
-        StudyDate: "20231201"
+        PatientID: "12345",
+        StudyDate: "20231201",
+        StudyDescription: "CT Chest",
+        AccessionNumber: "A12345"
     },
     series: [
         {
-            series_instance_uid: "1.2.3...",
-            tags: {                // Series-level tags
+            seriesInstanceUid: "1.2.3...",
+            tags: {                // Series level tags only
                 Modality: "CT",
-                SeriesDescription: "..."
+                SeriesNumber: "1",
+                SeriesDescription: "Chest with contrast",
+                BodyPartExamined: "CHEST"
             },
             instances: [
                 {
-                    sop_instance_uid: "1.2.3...",
-                    sop_class_uid: "1.2.840...",
-                    transfer_syntax_uid: "1.2.840...",
+                    sopInstanceUid: "1.2.3...",
+                    sopClassUid: "1.2.840...",
+                    transferSyntaxUid: "1.2.840...",
                     file: "path/to/file.dcm",
-                    tags: {        // Instance-level tags
+                    tags: {        // Instance + Equipment level tags only
                         InstanceNumber: "1",
-                        SliceThickness: "5.0"
+                        SliceLocation: "100.0",
+                        SliceThickness: "5.0",
+                        Manufacturer: "GE",              // Equipment tag
+                        ManufacturerModelName: "CT750",  // Equipment tag
+                        SoftwareVersions: "1.0"          // Equipment tag
                     }
                 }
             ]
@@ -274,7 +1321,12 @@ Event data structure (with `ByScope` grouping):
 }
 ```
 
-**Note:** With `Flat` grouping, all data goes to `instance.tags` only. With `StudyLevel`, data is split between `study.tags` and `instance.tags`.
+**Tag Distribution:**
+- **Study level**: Patient demographics + Study metadata (no duplication across series/instances)
+- **Series level**: Series-specific tags (no duplication across instances)
+- **Instance level**: Instance-specific data + Equipment/device information
+
+This hierarchical structure avoids data duplication while keeping tags flat at each level for easy access.
 
 ## Storage Backends
 
@@ -334,7 +1386,6 @@ const receiver = new StoreScp({
         'Modality', 'SeriesDescription', 'SeriesNumber',
         'InstanceNumber', 'SliceThickness'
     ],
-    groupingStrategy: 'ByScope',
     
     // SOP Classes (only accept CT and MR)
     abstractSyntaxMode: 'Custom',
@@ -349,19 +1400,30 @@ const receiver = new StoreScp({
     verbose: true
 });
 
-receiver.addEventListener('OnServerStarted', (data) => {
-    console.log(`✓ SCP Server listening on port ${data.port}`);
+receiver.onServerStarted((err, event) => {
+    if (err) return console.error('Error:', err);
+    console.log(`✓ SCP Server started:`, event.message);
 });
 
-receiver.addEventListener('OnFileStored', (data) => {
+receiver.onFileStored((err, event) => {
+    if (err) return console.error('Error:', err);
+    const data = event.data;
+    if (!data) return;
+    
     console.log(`✓ Received: ${data.file}`);
-    console.log(`  Patient: ${data.tags.patient?.PatientName}`);
-    console.log(`  Study: ${data.tags.study?.StudyDescription}`);
+    console.log(`  Patient: ${data.tags?.PatientName}`);
+    console.log(`  Study: ${data.tags?.StudyDescription}`);
+    console.log(`  Modality: ${data.tags?.Modality}`);
 });
 
-receiver.addEventListener('OnStudyCompleted', (study) => {
+receiver.onStudyCompleted((err, event) => {
+    if (err) return console.error('Error:', err);
+    const study = event.data?.study;
+    if (!study) return;
+    
     const totalInstances = study.series.reduce((sum, s) => sum + s.instances.length, 0);
-    console.log(`✓ Study ${study.study_instance_uid} completed`);
+    console.log(`✓ Study ${study.studyInstanceUid} completed`);
+    console.log(`  Patient: ${study.tags?.PatientName}`);
     console.log(`  ${study.series.length} series, ${totalInstances} instances`);
 });
 
@@ -370,8 +1432,13 @@ receiver.listen();
 
 ## Tips
 
-1. **Choose the right grouping strategy**: Use `ByScope` for proper hierarchy, `Flat` for simple key-value extraction
-2. **Configure SOP classes**: Limit to only the modalities you need for better control
-3. **Set appropriate timeout**: Adjust `studyTimeout` based on your typical scan duration
-4. **Use S3 for production**: Filesystem is good for development, S3 for scalable storage
-5. **Extract only needed tags**: Don't extract unnecessary tags to reduce memory usage
+1. **Tag extraction is always flat**: `OnFileStored` provides flat tags for simple access; `OnStudyCompleted` provides hierarchical organization with flat tags at each level
+2. **Configure SOP classes**: Limit to only the modalities you need for better control and security
+3. **Set appropriate timeout**: Adjust `studyTimeout` based on your typical scan duration and network speed
+4. **Use S3 for production scale**: Filesystem is good for development, S3 for unlimited scalable storage
+5. **Extract only needed tags**: Don't extract unnecessary tags to reduce memory usage and processing time
+6. **Start with defaults**: Begin with simple configuration and add complexity only as needed
+7. **Enable verbose for debugging**: Use `verbose: true` during development to see detailed protocol information
+8. **Test with real data**: Always test with actual DICOM files from your modalities before production
+9. **Monitor disk space**: With Filesystem storage, ensure adequate space and set up monitoring/alerts
+10. **Secure your credentials**: Never hardcode S3 credentials - use environment variables or secret management

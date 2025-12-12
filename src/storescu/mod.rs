@@ -82,6 +82,12 @@ pub enum StoreScuEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferStartedEvent {
     pub message: String,
+    pub data: Option<TransferStartedData>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferStartedData {
     pub total_files: u32,
 }
 
@@ -94,6 +100,12 @@ pub struct TransferStartedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSendingEvent {
     pub message: String,
+    pub data: Option<FileSendingData>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSendingData {
     pub file: String,
     pub sop_instance_uid: String,
     pub sop_class_uid: String,
@@ -108,6 +120,12 @@ pub struct FileSendingEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSentEvent {
     pub message: String,
+    pub data: Option<FileSentData>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSentData {
     pub file: String,
     pub sop_instance_uid: String,
     pub sop_class_uid: String,
@@ -124,6 +142,12 @@ pub struct FileSentEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileErrorEvent {
     pub message: String,
+    pub data: Option<FileErrorData>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileErrorData {
     pub file: String,
     pub error: String,
     pub sop_instance_uid: Option<String>,
@@ -140,6 +164,12 @@ pub struct FileErrorEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferCompletedEvent {
     pub message: String,
+    pub data: Option<TransferCompletedData>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferCompletedData {
     pub total_files: u32,
     pub successful: u32,
     pub failed: u32,
@@ -1030,7 +1060,9 @@ async fn run_async(
             if let Some(cb) = &on_transfer_started_clone {
                 cb.call(Ok(TransferStartedEvent {
                     message: "Transfer started".to_string(),
-                    total_files: num_files as u32,
+                    data: Some(TransferStartedData {
+                        total_files: num_files as u32,
+                    }),
                 }), ThreadsafeFunctionCallMode::NonBlocking);
             }
             
@@ -1111,10 +1143,12 @@ async fn run_async(
     if let Some(cb) = &on_transfer_completed {
         cb.call(Ok(TransferCompletedEvent {
             message: "All files transferred successfully".to_string(),
-            total_files: num_files as u32,
-            successful,
-            failed,
-            duration_seconds: duration.as_secs_f64(),
+            data: Some(TransferCompletedData {
+                total_files: num_files as u32,
+                successful,
+                failed,
+                duration_seconds: duration.as_secs_f64(),
+            }),
         }), ThreadsafeFunctionCallMode::NonBlocking);
     }
 

@@ -17,8 +17,7 @@ use dicom_object::{InMemDicomObject, StandardDataDictionary};
 
 mod sop_classes;
 
-use crate::utils::{CustomTag, GroupingStrategy, S3Config, build_s3_bucket, check_s3_connectivity};
-use crate::utils::tag_extractor::{ScopedDicomData, StudyLevelData, ExtractionResult};
+use crate::utils::{CustomTag, S3Config, build_s3_bucket, check_s3_connectivity};
 
 mod transfer;
 mod store_async;
@@ -129,8 +128,6 @@ pub struct StoreScp {
     extract_tags: Vec<String>,
     /// Custom DICOM tags to extract (with user-defined names)
     extract_custom_tags: Vec<CustomTag>,
-    /// Grouping strategy for extracted data
-    grouping_strategy: GroupingStrategy,
     /// Abstract syntax acceptance mode
     abstract_syntax_mode: AbstractSyntaxMode,
     /// Custom abstract syntaxes (SOP Class UIDs)
@@ -211,12 +208,8 @@ pub struct ScpEventDetails {
     pub study_instance_uid: Option<String>,
     /// Series Instance UID
     pub series_instance_uid: Option<String>,
-    /// Extracted DICOM tags (structured based on grouping strategy)
-    pub tags_scoped: Option<ScopedDicomData>,
     /// Extracted DICOM tags (flat key-value pairs)
-    pub tags_flat: Option<HashMap<String, String>>,
-    /// Extracted DICOM tags (study-level grouping)
-    pub tags_study_level: Option<StudyLevelData>,
+    pub tags: Option<HashMap<String, String>>,
     /// Error message (for OnError events)
     pub error: Option<String>,
     /// Study completion data with full hierarchy
@@ -228,9 +221,8 @@ pub struct ScpEventDetails {
 #[derive(Clone, Debug)]
 pub struct StudyHierarchyData {
     pub study_instance_uid: String,
-    pub tags_scoped: Option<ScopedDicomData>,
-    pub tags_flat: Option<HashMap<String, String>>,
-    pub tags_study_level: Option<StudyLevelData>,
+    /// Patient + Study level tags only
+    pub tags: Option<HashMap<String, String>>,
     pub series: Vec<SeriesHierarchyData>,
 }
 
@@ -239,9 +231,8 @@ pub struct StudyHierarchyData {
 #[derive(Clone, Debug)]
 pub struct SeriesHierarchyData {
     pub series_instance_uid: String,
-    pub tags_scoped: Option<ScopedDicomData>,
-    pub tags_flat: Option<HashMap<String, String>>,
-    pub tags_study_level: Option<StudyLevelData>,
+    /// Series level tags only
+    pub tags: Option<HashMap<String, String>>,
     pub instances: Vec<InstanceHierarchyData>,
 }
 
@@ -253,9 +244,8 @@ pub struct InstanceHierarchyData {
     pub sop_class_uid: String,
     pub transfer_syntax_uid: String,
     pub file: String,
-    pub tags_scoped: Option<ScopedDicomData>,
-    pub tags_flat: Option<HashMap<String, String>>,
-    pub tags_study_level: Option<StudyLevelData>,
+    /// Instance + Equipment level tags only
+    pub tags: Option<HashMap<String, String>>,
 }
 
 pub struct StoreScpServer  {
@@ -271,7 +261,6 @@ pub struct StoreScpServer  {
     store_with_file_meta: bool,
     extract_tags: Vec<String>,
     extract_custom_tags: Vec<CustomTag>,
-    grouping_strategy: GroupingStrategy,
     abstract_syntax_mode: AbstractSyntaxMode,
     abstract_syntaxes: Vec<String>,
     transfer_syntax_mode: TransferSyntaxMode,
@@ -298,7 +287,6 @@ impl napi::Task for StoreScpServer {
       store_with_file_meta: self.store_with_file_meta,
       extract_tags: self.extract_tags.clone(),
       extract_custom_tags: self.extract_custom_tags.clone(),
-      grouping_strategy: self.grouping_strategy,
       abstract_syntax_mode: self.abstract_syntax_mode.clone(),
       abstract_syntaxes: self.abstract_syntaxes.clone(),
       transfer_syntax_mode: self.transfer_syntax_mode.clone(),
@@ -375,7 +363,6 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
                   store_with_file_meta: args.store_with_file_meta,
                   extract_tags: args.extract_tags.clone(),
                   extract_custom_tags: args.extract_custom_tags.clone(),
-                  grouping_strategy: args.grouping_strategy,
                   abstract_syntax_mode: args.abstract_syntax_mode.clone(),
                   abstract_syntaxes: args.abstract_syntaxes.clone(),
                   transfer_syntax_mode: args.transfer_syntax_mode.clone(),
@@ -403,9 +390,7 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
                                   transfer_syntax_uid: None,
                                   study_instance_uid: None,
                                   series_instance_uid: None,
-                                  tags_scoped: None,
-                                  tags_flat: None,
-                                  tags_study_level: None,
+                                  tags: None,
                                   error: None,
                                   study: Some(study_hierarchy),
                               }),
@@ -421,9 +406,7 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
                                       transfer_syntax_uid: None,
                                       study_instance_uid: None,
                                       series_instance_uid: None,
-                                      tags_scoped: None,
-                                      tags_flat: None,
-                                      tags_study_level: None,
+                                      tags: None,
                                       error: Some(e.to_string()),
                                       study: None,
                                   }),
@@ -514,9 +497,6 @@ pub struct StoreScpOptions {
     pub extract_tags: Option<Vec<String>>,
     /// Custom private tags to extract with user-defined names
     pub extract_custom_tags: Option<Vec<CustomTag>>,
-    /// Grouping strategy for extracted tags: 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom' (default: 'ByScope')
-    #[napi(ts_type = "'ByScope' | 'Flat' | 'StudyLevel' | 'Custom' | (string & {})")]
-    pub grouping_strategy: Option<GroupingStrategy>,
 }
 
 /**
@@ -653,7 +633,6 @@ impl StoreScp {
         // Use provided tags or empty (user must specify)
         let extract_tags = options.extract_tags.unwrap_or_default();
         let extract_custom_tags = options.extract_custom_tags.unwrap_or_default();
-        let grouping_strategy = options.grouping_strategy.unwrap_or(GroupingStrategy::ByScope);
         
         // Handle syntax configuration
         let abstract_syntax_mode = options.abstract_syntax_mode.unwrap_or(AbstractSyntaxMode::AllStorage);
@@ -675,7 +654,6 @@ impl StoreScp {
             store_with_file_meta,
             extract_tags,
             extract_custom_tags,
-            grouping_strategy,
             abstract_syntax_mode,
             abstract_syntaxes,
             transfer_syntax_mode,
@@ -757,7 +735,6 @@ impl StoreScp {
           store_with_file_meta: self.store_with_file_meta,
           extract_tags: self.extract_tags.clone(),
           extract_custom_tags: self.extract_custom_tags.clone(),
-          grouping_strategy: self.grouping_strategy,
           abstract_syntax_mode: self.abstract_syntax_mode.clone(),
           abstract_syntaxes: self.abstract_syntaxes.clone(),
           transfer_syntax_mode: self.transfer_syntax_mode.clone(),

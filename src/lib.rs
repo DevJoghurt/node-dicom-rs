@@ -6,7 +6,7 @@ pub mod storescp;
 pub mod utils;
 
 // Re-export utils for backward compatibility
-pub use utils::{dicom_tags, tag_extractor, helpers};
+pub use utils::{dicom_tags, helpers};
 
 #[macro_use]
 extern crate napi_derive;

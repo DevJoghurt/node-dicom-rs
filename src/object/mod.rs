@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
-use std::cell::RefCell;
+use std::sync::Mutex;
+use std::collections::HashMap;
 use dicom_dictionary_std::tags;
 use dicom_core::header::Tag;
 use dicom_object::{ open_file, DefaultDicomObject};
@@ -11,7 +12,7 @@ use s3::Bucket;
 #[cfg(feature = "transcode")]
 use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
 
-use crate::utils::{extract_tags, CustomTag, GroupingStrategy, S3Config, build_s3_bucket, s3_get_object, s3_put_object};
+use crate::utils::{extract_tags_flat, CustomTag, S3Config, build_s3_bucket, s3_get_object, s3_put_object};
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -97,6 +98,25 @@ pub enum PixelDataFormat {
     Json,
 }
 
+/// Options for processing pixel data in-memory (return as Buffer)
+#[napi(object)]
+pub struct PixelDataProcessingOptions {
+    /// Specific frame number to extract (0-based, for multi-frame images)
+    pub frame_number: Option<u32>,
+    
+    /// Apply VOI LUT (Value of Interest Lookup Table) for windowing
+    pub apply_voi_lut: Option<bool>,
+    
+    /// Window center for manual windowing (overrides VOI LUT from file)
+    pub window_center: Option<f64>,
+    
+    /// Window width for manual windowing (overrides VOI LUT from file)
+    pub window_width: Option<f64>,
+    
+    /// Convert to 8-bit grayscale (applies windowing then scales to 0-255)
+    pub convert_to_8bit: Option<bool>,
+}
+
 /// Pixel data information
 #[napi(object)]
 pub struct PixelDataInfo {
@@ -153,8 +173,8 @@ pub struct PixelDataInfo {
 
 #[napi]
 pub struct DicomFile{
-    /// DICOM object (wrapped in RefCell for interior mutability in async methods)
-    dicom_file: RefCell<Option<DefaultDicomObject>>,
+    /// DICOM object (wrapped in Mutex for thread-safe async operations)
+    dicom_file: Mutex<Option<DefaultDicomObject>>,
     /// Storage configuration
     storage_config: StorageConfig,
     /// S3 bucket instance (if using S3)
@@ -215,7 +235,7 @@ impl DicomFile {
         };
         
         Ok(DicomFile {
-            dicom_file: RefCell::new(None),
+            dicom_file: Mutex::new(None),
             storage_config: config,
             s3_bucket,
         })
@@ -295,43 +315,37 @@ impl DicomFile {
      * ```typescript
      * // Filesystem
      * const file1 = new DicomFile();
-     * file1.open('/path/to/file.dcm');
+     * await file1.open('/path/to/file.dcm');
      * 
      * // S3
      * const file2 = new DicomFile({ backend: 'S3', s3Config: {...} });
-     * file2.open('folder/file.dcm'); // Reads from S3 bucket
+     * await file2.open('folder/file.dcm'); // Reads from S3 bucket
      * ```
      */
     #[napi]
-    pub fn open(&self, path: String) -> napi::Result<String> {
-        // Create a Tokio runtime for async operations
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
-        
-        rt.block_on(async {
-            match self.storage_config.backend {
-                StorageBackend::S3 => {
-                    // Read from S3
-                    let data = self.read_from_s3(&path).await?;
-                    
-                    // Parse DICOM from bytes
-                    let dicom_file = dicom_object::from_reader(&data[..])
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM from S3: {}", e)))?;
-                    
-                    *self.dicom_file.borrow_mut() = Some(dicom_file);
-                    Ok(format!("File opened successfully from S3: {}", path))
-                },
-                StorageBackend::Filesystem => {
-                    // Read from filesystem
-                    let resolved_path = self.resolve_path(&path);
-                    let dicom_file = open_file(&resolved_path)
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to open DICOM file: {}", e)))?;
-                    
-                    *self.dicom_file.borrow_mut() = Some(dicom_file);
-                    Ok(format!("File opened successfully: {}", resolved_path.display()))
-                }
+    pub async fn open(&self, path: String) -> napi::Result<String> {
+        match self.storage_config.backend {
+            StorageBackend::S3 => {
+                // Read from S3
+                let data = self.read_from_s3(&path).await?;
+                
+                // Parse DICOM from bytes
+                let dicom_file = dicom_object::from_reader(&data[..])
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM from S3: {}", e)))?;
+                
+                *self.dicom_file.lock().unwrap() = Some(dicom_file);
+                Ok(format!("File opened successfully from S3: {}", path))
+            },
+            StorageBackend::Filesystem => {
+                // Read from filesystem
+                let resolved_path = self.resolve_path(&path);
+                let dicom_file = open_file(&resolved_path)
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to open DICOM file: {}", e)))?;
+                
+                *self.dicom_file.lock().unwrap() = Some(dicom_file);
+                Ok(format!("File opened successfully: {}", resolved_path.display()))
             }
-        })
+        }
     }
 
     /**
@@ -348,32 +362,27 @@ impl DicomFile {
      * @example
      * ```typescript
      * const file = new DicomFile();
-     * file.openJson('/path/to/file.json');
-     * const data = file.extract(['PatientName', 'StudyDate'], undefined, 'Flat');
+     * await file.openJson('/path/to/file.json');
+     * const data = file.extract(['PatientName', 'StudyDate']);
      * ```
      */
     #[napi]
-    pub fn open_json(&self, path: String) -> napi::Result<String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
+    pub async fn open_json(&self, path: String) -> napi::Result<String> {
+        // Read JSON content from S3 or filesystem
+        let json_content = match self.storage_config.backend {
+            StorageBackend::S3 => {
+                let data = self.read_from_s3(&path).await?;
+                String::from_utf8(data)
+                    .map_err(|e| napi::Error::from_reason(format!("Invalid UTF-8 in JSON file: {}", e)))?
+            },
+            StorageBackend::Filesystem => {
+                let resolved_path = self.resolve_path(&path);
+                std::fs::read_to_string(&resolved_path)
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to read JSON file: {}", e)))?
+            }
+        };
         
-        rt.block_on(async {
-            // Read JSON content from S3 or filesystem
-            let json_content = match self.storage_config.backend {
-                StorageBackend::S3 => {
-                    let data = self.read_from_s3(&path).await?;
-                    String::from_utf8(data)
-                        .map_err(|e| napi::Error::from_reason(format!("Invalid UTF-8 in JSON file: {}", e)))?
-                },
-                StorageBackend::Filesystem => {
-                    let resolved_path = self.resolve_path(&path);
-                    std::fs::read_to_string(&resolved_path)
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to read JSON file: {}", e)))?
-                }
-            };
-            
-            self.parse_and_set_json(json_content, &path)
-        })
+        self.parse_and_set_json(json_content, &path)
     }
     
     fn parse_and_set_json(&self, json_content: String, path: &str) -> napi::Result<String> {
@@ -428,7 +437,7 @@ impl DicomFile {
             let _ = dicom_obj.put(elem);
         }
         
-        *self.dicom_file.borrow_mut() = Some(dicom_obj);
+        *self.dicom_file.lock().unwrap() = Some(dicom_obj);
         Ok(format!("DICOM JSON file opened successfully: {}", path))
     }
 
@@ -442,10 +451,10 @@ impl DicomFile {
      */
     #[napi]
     pub fn dump(&self) -> Result<(), JsError> {
-        if self.dicom_file.borrow().is_none() {
+        if self.dicom_file.lock().unwrap().is_none() {
             return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
         }
-        let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
         dicom_dump::dump_file(dicom_ref.as_ref().unwrap())
             .map_err(|e| JsError::from(napi::Error::from_reason(e.to_string())))
     }
@@ -473,37 +482,30 @@ impl DicomFile {
      */
     #[napi]
     pub fn save_raw_pixel_data(&self, path: String) -> Result<String, JsError> {
-        if self.dicom_file.borrow().is_none() {
+        if self.dicom_file.lock().unwrap().is_none() {
             return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
         }
         
-        let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
         let obj = dicom_ref.as_ref().unwrap();
         let pixel_data = obj.element(tags::PIXEL_DATA)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
         
         let data = pixel_data.to_bytes()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read pixel data: {}", e)))?;
         
         std::fs::write(&path, &data)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to write file: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to write file: {}", e)))?;
         
         Ok(format!("Pixel data saved successfully ({} bytes)", data.len()))
     }
 
     /**
-     * Extract DICOM tags with flexible grouping strategies.
+     * Extract DICOM tags and return as flat key-value structure.
      * 
-     * Extracts specified DICOM tags and returns them as a JSON string, organized according
-     * to the chosen grouping strategy. Supports any tag name from the DICOM standard or
-     * hex format (e.g., "00100010").
-     * 
-     * ## Grouping Strategies
-     * 
-     * - **"ByScope"** (default): Groups tags by DICOM hierarchy levels (Patient, Study, Series, Instance, Equipment)
-     * - **"Flat"**: Returns all tags in a flat key-value structure
-     * - **"StudyLevel"**: Groups into studyLevel (Patient+Study) and instanceLevel (Series+Instance+Equipment)
-     * - **"Custom"**: Reserved for user-defined grouping rules (currently behaves like ByScope)
+     * Extracts specified DICOM tags and returns them as a JSON string with a simple
+     * flat structure (all tags at root level). Supports any tag name from the DICOM 
+     * standard or hex format (e.g., "00100010").
      * 
      * ## Tag Name Formats
      * 
@@ -520,62 +522,211 @@ impl DicomFile {
      * 
      * file.extract(
      *   ['PatientName'],
-     *   [createCustomTag('00091001', 'VendorPrivateTag')],
-     *   'ByScope'
+     *   [createCustomTag('00091001', 'VendorPrivateTag')]
      * );
      * ```
      * 
      * @param tagNames - Array of DICOM tag names or hex values to extract. Supports 300+ autocomplete suggestions.
      * @param customTags - Optional array of custom tag specifications for private/vendor tags
-     * @param strategy - Grouping strategy: "ByScope" | "Flat" | "StudyLevel" | "Custom" (default: "ByScope")
-     * @returns JSON string containing extracted tags, structure depends on grouping strategy
+     * @returns JSON string containing extracted tags as flat key-value pairs
      * @throws Error if no file is opened or JSON serialization fails
      * 
      * @example
      * ```typescript
-     * // Scoped grouping (default)
-     * const json = file.extract(['PatientName', 'StudyDate', 'Modality'], undefined, 'ByScope');
+     * // Extract standard tags
+     * const json = file.extract(['PatientName', 'StudyDate', 'Modality']);
      * const data = JSON.parse(json);
-     * // { patient: { PatientName: "..." }, study: { StudyDate: "..." }, series: { Modality: "..." } }
-     * 
-     * // Flat structure
-     * const flatJson = file.extract(['PatientName', 'StudyDate'], undefined, 'Flat');
-     * // { "PatientName": "...", "StudyDate": "..." }
+     * // { "PatientName": "DOE^JOHN", "StudyDate": "20240101", "Modality": "CT" }
      * 
      * // Use predefined tag sets
      * import { getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
      * const tags = getCommonTagSets();
      * const allTags = combineTags([tags.patientBasic, tags.studyBasic, tags.ct]);
-     * const extracted = file.extract(allTags, undefined, 'StudyLevel');
+     * const extracted = file.extract(allTags);
      * ```
      */
     #[napi(
-        ts_args_type = "tagNames: Array<'AccessionNumber' | 'AcquisitionDate' | 'AcquisitionDateTime' | 'AcquisitionNumber' | 'AcquisitionTime' | 'ActualCardiacTriggerTimePriorToRPeak' | 'ActualFrameDuration' | 'AdditionalPatientHistory' | 'AdmissionID' | 'AdmittingDiagnosesDescription' | 'AnatomicalOrientationType' | 'AnatomicRegionSequence' | 'AnodeTargetMaterial' | 'BeamLimitingDeviceAngle' | 'BitsAllocated' | 'BitsStored' | 'BluePaletteColorLookupTableDescriptor' | 'BodyPartExamined' | 'BodyPartThickness' | 'BranchOfService' | 'BurnedInAnnotation' | 'ChannelSensitivity' | 'CineRate' | 'CollimatorType' | 'Columns' | 'CompressionForce' | 'ContentDate' | 'ContentTime' | 'ContrastBolusAgent' | 'ContrastBolusIngredient' | 'ContrastBolusIngredientConcentration' | 'ContrastBolusRoute' | 'ContrastBolusStartTime' | 'ContrastBolusStopTime' | 'ContrastBolusTotalDose' | 'ContrastBolusVolume' | 'ContrastFlowDuration' | 'ContrastFlowRate' | 'ConvolutionKernel' | 'CorrectedImage' | 'CountsSource' | 'DataCollectionDiameter' | 'DecayCorrection' | 'DeidentificationMethod' | 'DerivationDescription' | 'DetectorTemperature' | 'DeviceSerialNumber' | 'DistanceSourceToDetector' | 'DistanceSourceToPatient' | 'EchoTime' | 'EthnicGroup' | 'Exposure' | 'ExposureInMicroAmpereSeconds' | 'ExposureTime' | 'FilterType' | 'FlipAngle' | 'FocalSpots' | 'FrameDelay' | 'FrameIncrementPointer' | 'FrameOfReferenceUID' | 'FrameTime' | 'GantryAngle' | 'GeneratorPower' | 'GraphicAnnotationSequence' | 'GreenPaletteColorLookupTableDescriptor' | 'HeartRate' | 'HighBit' | 'ImageComments' | 'ImageLaterality' | 'ImageOrientationPatient' | 'ImagePositionPatient' | 'ImagerPixelSpacing' | 'ImageTriggerDelay' | 'ImageType' | 'ImagingFrequency' | 'ImplementationClassUID' | 'ImplementationVersionName' | 'InstanceCreationDate' | 'InstanceCreationTime' | 'InstanceNumber' | 'InstitutionName' | 'IntensifierSize' | 'IssuerOfAdmissionID' | 'KVP' | 'LargestImagePixelValue' | 'LargestPixelValueInSeries' | 'Laterality' | 'LossyImageCompression' | 'LossyImageCompressionMethod' | 'LossyImageCompressionRatio' | 'MagneticFieldStrength' | 'Manufacturer' | 'ManufacturerModelName' | 'MedicalRecordLocator' | 'MilitaryRank' | 'Modality' | 'MultiplexGroupTimeOffset' | 'NameOfPhysiciansReadingStudy' | 'NominalCardiacTriggerDelayTime' | 'NominalInterval' | 'NumberOfFrames' | 'NumberOfSlices' | 'NumberOfTemporalPositions' | 'NumberOfWaveformChannels' | 'NumberOfWaveformSamples' | 'Occupation' | 'OperatorsName' | 'OtherPatientIDs' | 'OtherPatientNames' | 'OverlayBitPosition' | 'OverlayBitsAllocated' | 'OverlayColumns' | 'OverlayData' | 'OverlayOrigin' | 'OverlayRows' | 'OverlayType' | 'PaddleDescription' | 'PatientAge' | 'PatientBirthDate' | 'PatientBreedDescription' | 'PatientComments' | 'PatientID' | 'PatientIdentityRemoved' | 'PatientName' | 'PatientPosition' | 'PatientSex' | 'PatientSize' | 'PatientSpeciesDescription' | 'PatientSupportAngle' | 'PatientTelephoneNumbers' | 'PatientWeight' | 'PerformedProcedureStepDescription' | 'PerformedProcedureStepID' | 'PerformedProcedureStepStartDate' | 'PerformedProcedureStepStartTime' | 'PerformedProtocolCodeSequence' | 'PerformingPhysicianName' | 'PhotometricInterpretation' | 'PhysiciansOfRecord' | 'PixelAspectRatio' | 'PixelPaddingRangeLimit' | 'PixelPaddingValue' | 'PixelRepresentation' | 'PixelSpacing' | 'PlanarConfiguration' | 'PositionerPrimaryAngle' | 'PositionerSecondaryAngle' | 'PositionReferenceIndicator' | 'PreferredPlaybackSequencing' | 'PresentationIntentType' | 'PresentationLUTShape' | 'PrimaryAnatomicStructureSequence' | 'PrivateInformationCreatorUID' | 'ProtocolName' | 'QualityControlImage' | 'RadiationMachineName' | 'RadiationSetting' | 'RadionuclideTotalDose' | 'RadiopharmaceuticalInformationSequence' | 'RadiopharmaceuticalStartDateTime' | 'RadiopharmaceuticalStartTime' | 'RadiopharmaceuticalVolume' | 'ReasonForTheRequestedProcedure' | 'ReceivingApplicationEntityTitle' | 'RecognizableVisualFeatures' | 'RecommendedDisplayFrameRate' | 'ReconstructionDiameter' | 'ReconstructionTargetCenterPatient' | 'RedPaletteColorLookupTableDescriptor' | 'ReferencedBeamNumber' | 'ReferencedImageSequence' | 'ReferencedPatientPhotoSequence' | 'ReferencedPerformedProcedureStepSequence' | 'ReferencedRTPlanSequence' | 'ReferencedSOPClassUID' | 'ReferencedSOPInstanceUID' | 'ReferencedStudySequence' | 'ReferringPhysicianName' | 'RepetitionTime' | 'RequestAttributesSequence' | 'RequestedContrastAgent' | 'RequestedProcedureDescription' | 'RequestedProcedureID' | 'RequestingPhysician' | 'RescaleIntercept' | 'RescaleSlope' | 'RescaleType' | 'ResponsibleOrganization' | 'ResponsiblePerson' | 'ResponsiblePersonRole' | 'Rows' | 'RTImageDescription' | 'RTImageLabel' | 'SamplesPerPixel' | 'SamplingFrequency' | 'ScanningSequence' | 'SendingApplicationEntityTitle' | 'SeriesDate' | 'SeriesDescription' | 'SeriesInstanceUID' | 'SeriesNumber' | 'SeriesTime' | 'SeriesType' | 'SliceLocation' | 'SliceThickness' | 'SmallestImagePixelValue' | 'SmallestPixelValueInSeries' | 'SoftwareVersions' | 'SOPClassUID' | 'SOPInstanceUID' | 'SoundPathLength' | 'SourceApplicationEntityTitle' | 'SourceImageSequence' | 'SpacingBetweenSlices' | 'SpecificCharacterSet' | 'StationName' | 'StudyComments' | 'StudyDate' | 'StudyDescription' | 'StudyID' | 'StudyInstanceUID' | 'StudyTime' | 'TableHeight' | 'TableTopLateralPosition' | 'TableTopLongitudinalPosition' | 'TableTopVerticalPosition' | 'TableType' | 'TemporalPositionIdentifier' | 'TemporalResolution' | 'TextObjectSequence' | 'TimezoneOffsetFromUTC' | 'TransducerFrequency' | 'TransducerType' | 'TransferSyntaxUID' | 'TriggerTime' | 'TriggerTimeOffset' | 'UltrasoundColorDataPresent' | 'Units' | 'VOILUTFunction' | 'WaveformOriginality' | 'WaveformSequence' | 'WindowCenter' | 'WindowCenterWidthExplanation' | 'WindowWidth' | 'XRayTubeCurrent' | (string & {})>, customTags?: Array<CustomTag>, strategy?: 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom'"
+        ts_args_type = "tagNames: Array<'AccessionNumber' | 'AcquisitionDate' | 'AcquisitionDateTime' | 'AcquisitionNumber' | 'AcquisitionTime' | 'ActualCardiacTriggerTimePriorToRPeak' | 'ActualFrameDuration' | 'AdditionalPatientHistory' | 'AdmissionID' | 'AdmittingDiagnosesDescription' | 'AnatomicalOrientationType' | 'AnatomicRegionSequence' | 'AnodeTargetMaterial' | 'BeamLimitingDeviceAngle' | 'BitsAllocated' | 'BitsStored' | 'BluePaletteColorLookupTableDescriptor' | 'BodyPartExamined' | 'BodyPartThickness' | 'BranchOfService' | 'BurnedInAnnotation' | 'ChannelSensitivity' | 'CineRate' | 'CollimatorType' | 'Columns' | 'CompressionForce' | 'ContentDate' | 'ContentTime' | 'ContrastBolusAgent' | 'ContrastBolusIngredient' | 'ContrastBolusIngredientConcentration' | 'ContrastBolusRoute' | 'ContrastBolusStartTime' | 'ContrastBolusStopTime' | 'ContrastBolusTotalDose' | 'ContrastBolusVolume' | 'ContrastFlowDuration' | 'ContrastFlowRate' | 'ConvolutionKernel' | 'CorrectedImage' | 'CountsSource' | 'DataCollectionDiameter' | 'DecayCorrection' | 'DeidentificationMethod' | 'DerivationDescription' | 'DetectorTemperature' | 'DeviceSerialNumber' | 'DistanceSourceToDetector' | 'DistanceSourceToPatient' | 'EchoTime' | 'EthnicGroup' | 'Exposure' | 'ExposureInMicroAmpereSeconds' | 'ExposureTime' | 'FilterType' | 'FlipAngle' | 'FocalSpots' | 'FrameDelay' | 'FrameIncrementPointer' | 'FrameOfReferenceUID' | 'FrameTime' | 'GantryAngle' | 'GeneratorPower' | 'GraphicAnnotationSequence' | 'GreenPaletteColorLookupTableDescriptor' | 'HeartRate' | 'HighBit' | 'ImageComments' | 'ImageLaterality' | 'ImageOrientationPatient' | 'ImagePositionPatient' | 'ImagerPixelSpacing' | 'ImageTriggerDelay' | 'ImageType' | 'ImagingFrequency' | 'ImplementationClassUID' | 'ImplementationVersionName' | 'InstanceCreationDate' | 'InstanceCreationTime' | 'InstanceNumber' | 'InstitutionName' | 'IntensifierSize' | 'IssuerOfAdmissionID' | 'KVP' | 'LargestImagePixelValue' | 'LargestPixelValueInSeries' | 'Laterality' | 'LossyImageCompression' | 'LossyImageCompressionMethod' | 'LossyImageCompressionRatio' | 'MagneticFieldStrength' | 'Manufacturer' | 'ManufacturerModelName' | 'MedicalRecordLocator' | 'MilitaryRank' | 'Modality' | 'MultiplexGroupTimeOffset' | 'NameOfPhysiciansReadingStudy' | 'NominalCardiacTriggerDelayTime' | 'NominalInterval' | 'NumberOfFrames' | 'NumberOfSlices' | 'NumberOfTemporalPositions' | 'NumberOfWaveformChannels' | 'NumberOfWaveformSamples' | 'Occupation' | 'OperatorsName' | 'OtherPatientIDs' | 'OtherPatientNames' | 'OverlayBitPosition' | 'OverlayBitsAllocated' | 'OverlayColumns' | 'OverlayData' | 'OverlayOrigin' | 'OverlayRows' | 'OverlayType' | 'PaddleDescription' | 'PatientAge' | 'PatientBirthDate' | 'PatientBreedDescription' | 'PatientComments' | 'PatientID' | 'PatientIdentityRemoved' | 'PatientName' | 'PatientPosition' | 'PatientSex' | 'PatientSize' | 'PatientSpeciesDescription' | 'PatientSupportAngle' | 'PatientTelephoneNumbers' | 'PatientWeight' | 'PerformedProcedureStepDescription' | 'PerformedProcedureStepID' | 'PerformedProcedureStepStartDate' | 'PerformedProcedureStepStartTime' | 'PerformedProtocolCodeSequence' | 'PerformingPhysicianName' | 'PhotometricInterpretation' | 'PhysiciansOfRecord' | 'PixelAspectRatio' | 'PixelPaddingRangeLimit' | 'PixelPaddingValue' | 'PixelRepresentation' | 'PixelSpacing' | 'PlanarConfiguration' | 'PositionerPrimaryAngle' | 'PositionerSecondaryAngle' | 'PositionReferenceIndicator' | 'PreferredPlaybackSequencing' | 'PresentationIntentType' | 'PresentationLUTShape' | 'PrimaryAnatomicStructureSequence' | 'PrivateInformationCreatorUID' | 'ProtocolName' | 'QualityControlImage' | 'RadiationMachineName' | 'RadiationSetting' | 'RadionuclideTotalDose' | 'RadiopharmaceuticalInformationSequence' | 'RadiopharmaceuticalStartDateTime' | 'RadiopharmaceuticalStartTime' | 'RadiopharmaceuticalVolume' | 'ReasonForTheRequestedProcedure' | 'ReceivingApplicationEntityTitle' | 'RecognizableVisualFeatures' | 'RecommendedDisplayFrameRate' | 'ReconstructionDiameter' | 'ReconstructionTargetCenterPatient' | 'RedPaletteColorLookupTableDescriptor' | 'ReferencedBeamNumber' | 'ReferencedImageSequence' | 'ReferencedPatientPhotoSequence' | 'ReferencedPerformedProcedureStepSequence' | 'ReferencedRTPlanSequence' | 'ReferencedSOPClassUID' | 'ReferencedSOPInstanceUID' | 'ReferencedStudySequence' | 'ReferringPhysicianName' | 'RepetitionTime' | 'RequestAttributesSequence' | 'RequestedContrastAgent' | 'RequestedProcedureDescription' | 'RequestedProcedureID' | 'RequestingPhysician' | 'RescaleIntercept' | 'RescaleSlope' | 'RescaleType' | 'ResponsibleOrganization' | 'ResponsiblePerson' | 'ResponsiblePersonRole' | 'Rows' | 'RTImageDescription' | 'RTImageLabel' | 'SamplesPerPixel' | 'SamplingFrequency' | 'ScanningSequence' | 'SendingApplicationEntityTitle' | 'SeriesDate' | 'SeriesDescription' | 'SeriesInstanceUID' | 'SeriesNumber' | 'SeriesTime' | 'SeriesType' | 'SliceLocation' | 'SliceThickness' | 'SmallestImagePixelValue' | 'SmallestPixelValueInSeries' | 'SoftwareVersions' | 'SOPClassUID' | 'SOPInstanceUID' | 'SoundPathLength' | 'SourceApplicationEntityTitle' | 'SourceImageSequence' | 'SpacingBetweenSlices' | 'SpecificCharacterSet' | 'StationName' | 'StudyComments' | 'StudyDate' | 'StudyDescription' | 'StudyID' | 'StudyInstanceUID' | 'StudyTime' | 'TableHeight' | 'TableTopLateralPosition' | 'TableTopLongitudinalPosition' | 'TableTopVerticalPosition' | 'TableType' | 'TemporalPositionIdentifier' | 'TemporalResolution' | 'TextObjectSequence' | 'TimezoneOffsetFromUTC' | 'TransducerFrequency' | 'TransducerType' | 'TransferSyntaxUID' | 'TriggerTime' | 'TriggerTimeOffset' | 'UltrasoundColorDataPresent' | 'Units' | 'VOILUTFunction' | 'WaveformOriginality' | 'WaveformSequence' | 'WindowCenter' | 'WindowCenterWidthExplanation' | 'WindowWidth' | 'XRayTubeCurrent' | (string & {})>, customTags?: Array<CustomTag>"
     )]
     pub fn extract(
-        &self, 
+        &self,
         tag_names: Vec<String>, 
-        custom_tags: Option<Vec<CustomTag>>,
-        strategy: Option<String>
-    ) -> Result<String, JsError> {
-        if self.dicom_file.borrow().is_none() {
+        custom_tags: Option<Vec<CustomTag>>
+    ) -> Result<HashMap<String, String>, JsError> {
+        if self.dicom_file.lock().unwrap().is_none() {
             return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
         }
         
-        let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
         let obj = dicom_ref.as_ref().unwrap();
         let custom = custom_tags.unwrap_or_default();
-        let grouping = match strategy.as_deref() {
-            Some("Flat") => GroupingStrategy::Flat,
-            Some("StudyLevel") => GroupingStrategy::StudyLevel,
-            Some("Custom") => GroupingStrategy::Custom,
-            _ => GroupingStrategy::ByScope,
-        };
         
-        let result = extract_tags(obj, &tag_names, &custom, grouping);
+        // Always use flat extraction for consistency
+        let result = extract_tags_flat(obj, &tag_names, &custom);
         
-        serde_json::to_string(&result)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to serialize result: {}", e))))
+        Ok(result)
+    }
+
+    /**
+     * Update DICOM tag values in the currently opened file.
+     * 
+     * Modifies one or more DICOM tag values in memory. Changes are not persisted to disk
+     * until you call `saveAsDicom()`. Useful for anonymization, correcting metadata,
+     * or updating values before saving. Supports standard tag names and hex format.
+     * 
+     * **Important Notes:**
+     * - Changes are made in-memory only
+     * - Call `saveAsDicom()` to persist changes
+     * - Cannot modify meta information tags (file preamble)
+     * - Cannot modify pixel data with this method
+     * - For new tags, appropriate VR (Value Representation) is auto-detected
+     * 
+     * @param updates - Object with tag names as keys and new values as strings
+     * @returns Success message with number of tags updated
+     * @throws Error if no file is opened or tag update fails
+     * 
+     * @example
+     * ```typescript
+     * const file = new DicomFile();
+     * await file.open('original.dcm');
+     * 
+     * // Update multiple tags
+     * file.updateTags({
+     *     PatientName: 'ANONYMOUS',
+     *     PatientID: 'ANON001',
+     *     StudyDescription: 'Anonymized Study',
+     *     SeriesDescription: 'Anonymized Series'
+     * });
+     * 
+     * // Save changes
+     * await file.saveAsDicom('anonymized.dcm');
+     * file.close();
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Anonymization workflow
+     * const file = new DicomFile();
+     * await file.open('patient-scan.dcm');
+     * 
+     * file.updateTags({
+     *     PatientName: 'ANONYMOUS',
+     *     PatientID: crypto.randomUUID(),
+     *     PatientBirthDate: '',
+     *     PatientSex: '',
+     *     PatientAge: '',
+     *     InstitutionName: 'ANONYMIZED',
+     *     ReferringPhysicianName: '',
+     *     PerformingPhysicianName: ''
+     * });
+     * 
+     * await file.saveAsDicom('anonymized-scan.dcm');
+     * file.close();
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Update using hex tag format
+     * file.updateTags({
+     *     '00100010': 'DOE^JANE',        // PatientName
+     *     '00100020': 'PAT12345',         // PatientID
+     *     '00080020': '20240101'          // StudyDate
+     * });
+     * ```
+     */
+    #[napi]
+    pub fn update_tags(&self, updates: HashMap<String, String>) -> Result<String, JsError> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
+        
+        use dicom_dictionary_std::StandardDataDictionary;
+        use dicom_core::DataDictionary;
+        use dicom_core::VR;
+        use dicom_object::mem::InMemElement;
+        use dicom_core::PrimitiveValue;
+        
+        let dict = StandardDataDictionary;
+        let mut dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_mut().unwrap();
+        let mut updated_count = 0;
+        
+        for (tag_name, value) in updates {
+            // Try to resolve tag from name or hex format
+            let tag = if tag_name.starts_with("(") && tag_name.ends_with(")") {
+                // Format: (GGGG,EEEE)
+                let inner = &tag_name[1..tag_name.len()-1];
+                let parts: Vec<&str> = inner.split(',').collect();
+                if parts.len() == 2 {
+                    let group = u16::from_str_radix(parts[0].trim(), 16)
+                        .map_err(|_| JsError::from(napi::Error::from_reason(format!("Invalid tag format: {}", tag_name))))?;
+                    let element = u16::from_str_radix(parts[1].trim(), 16)
+                        .map_err(|_| JsError::from(napi::Error::from_reason(format!("Invalid tag format: {}", tag_name))))?;
+                    Tag(group, element)
+                } else {
+                    return Err(JsError::from(napi::Error::from_reason(format!("Invalid tag format: {}", tag_name))));
+                }
+            } else if tag_name.len() == 8 && tag_name.chars().all(|c| c.is_ascii_hexdigit()) {
+                // Format: GGGGEEEE
+                let group = u16::from_str_radix(&tag_name[0..4], 16)
+                    .map_err(|_| JsError::from(napi::Error::from_reason(format!("Invalid hex tag: {}", tag_name))))?;
+                let element = u16::from_str_radix(&tag_name[4..8], 16)
+                    .map_err(|_| JsError::from(napi::Error::from_reason(format!("Invalid hex tag: {}", tag_name))))?;
+                Tag(group, element)
+            } else {
+                // Try to find by name
+                let entry = dict.by_name(&tag_name)
+                    .ok_or_else(|| JsError::from(napi::Error::from_reason(format!("Unknown tag name: {}", tag_name))))?;
+                entry.tag.inner()
+            };
+            
+            // Don't allow modifying meta information tags
+            if tag.0 == 0x0002 {
+                return Err(JsError::from(napi::Error::from_reason(
+                    format!("Cannot modify file meta information tag: {}", tag_name)
+                )));
+            }
+            
+            // Don't allow modifying pixel data with this method
+            if tag == tags::PIXEL_DATA {
+                return Err(JsError::from(napi::Error::from_reason(
+                    "Cannot modify pixel data with updateTags(). Use pixel processing methods instead.".to_string()
+                )));
+            }
+            
+            // Get VR for this tag (use existing or look up in dictionary)
+            let vr = obj.element(tag)
+                .ok()
+                .map(|e| e.vr())
+                .or_else(|| dict.by_tag(tag).map(|entry| entry.vr.relaxed()))
+                .unwrap_or(VR::LO); // Default to LO (Long String) if unknown
+            
+            // Create new element with the value
+            let element = if value.is_empty() {
+                // Empty value - create element with no data
+                InMemElement::new(tag, vr, PrimitiveValue::Empty)
+            } else {
+                // Non-empty value - create appropriate primitive value based on VR
+                let prim_value = match vr {
+                    VR::AE | VR::AS | VR::CS | VR::DA | VR::DS | VR::DT | VR::IS | VR::LO | 
+                    VR::LT | VR::PN | VR::SH | VR::ST | VR::TM | VR::UC | VR::UI | VR::UR | VR::UT => {
+                        PrimitiveValue::Str(value.clone())
+                    },
+                    _ => {
+                        // For other VRs, try to parse as string or store as bytes
+                        PrimitiveValue::Str(value.clone())
+                    }
+                };
+                
+                InMemElement::new(tag, vr, prim_value)
+            };
+            
+            // Put the element (replaces existing or adds new)
+            obj.put(element);
+            updated_count += 1;
+        }
+        
+        Ok(format!("Successfully updated {} tag(s). Call saveAsDicom() to persist changes.", updated_count))
     }
 
     /**
@@ -597,55 +748,55 @@ impl DicomFile {
      * ```
      */
     #[napi]
-    pub fn get_pixel_data_info(&self) -> Result<PixelDataInfo, JsError> {
-        if self.dicom_file.borrow().is_none() {
-            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+    pub fn get_pixel_data_info(&self) -> napi::Result<PixelDataInfo> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
         }
         
-        let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
         let obj = dicom_ref.as_ref().unwrap();
         
         // Get required attributes
         let rows = obj.element(tags::ROWS)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read Rows: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read Rows: {}", e)))?  
             .to_int::<u32>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert Rows: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert Rows: {}", e)))?;
         
         let columns = obj.element(tags::COLUMNS)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read Columns: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read Columns: {}", e)))?  
             .to_int::<u32>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert Columns: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert Columns: {}", e)))?;
         
         let bits_allocated = obj.element(tags::BITS_ALLOCATED)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read BitsAllocated: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read BitsAllocated: {}", e)))?  
             .to_int::<u16>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert BitsAllocated: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert BitsAllocated: {}", e)))?;
         
         let bits_stored = obj.element(tags::BITS_STORED)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read BitsStored: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read BitsStored: {}", e)))?  
             .to_int::<u16>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert BitsStored: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert BitsStored: {}", e)))?;
         
         let high_bit = obj.element(tags::HIGH_BIT)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read HighBit: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read HighBit: {}", e)))?  
             .to_int::<u16>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert HighBit: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert HighBit: {}", e)))?;
         
         let pixel_representation = obj.element(tags::PIXEL_REPRESENTATION)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read PixelRepresentation: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read PixelRepresentation: {}", e)))?  
             .to_int::<u16>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert PixelRepresentation: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert PixelRepresentation: {}", e)))?;
         
         let samples_per_pixel = obj.element(tags::SAMPLES_PER_PIXEL)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read SamplesPerPixel: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read SamplesPerPixel: {}", e)))?  
             .to_int::<u16>()
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert SamplesPerPixel: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert SamplesPerPixel: {}", e)))?;
         
         let photometric_interpretation = obj.element(tags::PHOTOMETRIC_INTERPRETATION)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read PhotometricInterpretation: {}", e))))?  
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read PhotometricInterpretation: {}", e)))?  
             .to_str()
             .map(|s| s.to_string())
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert PhotometricInterpretation: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to convert PhotometricInterpretation: {}", e)))?;
         
         // Optional attributes
         let frames = obj.element(tags::NUMBER_OF_FRAMES)
@@ -662,7 +813,7 @@ impl DicomFile {
         
         // Get pixel data size
         let pixel_data = obj.element(tags::PIXEL_DATA)
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
         
         let data_size = pixel_data.to_bytes()
             .map(|b| b.len() as u32)
@@ -722,13 +873,13 @@ impl DicomFile {
      * @example
      * ```typescript
      * // Extract raw pixel data
-     * file.processPixelData({
+     * await file.processPixelData({
      *   outputPath: 'output.raw',
      *   format: 'Raw'
      * });
      * 
      * // Decode and save as PNG with windowing
-     * file.processPixelData({
+     * await file.processPixelData({
      *   outputPath: 'output.png',
      *   format: 'Png',
      *   decode: true,
@@ -737,26 +888,26 @@ impl DicomFile {
      * });
      * 
      * // Extract specific frame
-     * file.processPixelData({
+     * await file.processPixelData({
      *   outputPath: 'frame_5.raw',
      *   format: 'Raw',
      *   frameNumber: 5
      * });
      * 
      * // Get metadata as JSON
-     * file.processPixelData({
+     * await file.processPixelData({
      *   outputPath: 'info.json',
      *   format: 'Json'
      * });
      * ```
      */
     #[napi]
-    pub fn process_pixel_data(&self, options: PixelDataOptions) -> Result<String, JsError> {
-        if self.dicom_file.borrow().is_none() {
-            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+    pub async fn process_pixel_data(&self, options: PixelDataOptions) -> napi::Result<String> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
         }
         
-        let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
         let obj = dicom_ref.as_ref().unwrap();
         let format = options.format.unwrap_or(PixelDataFormat::Raw);
         let decode = options.decode.unwrap_or(false);
@@ -782,10 +933,10 @@ impl DicomFile {
                 "windowCenter": info.window_center,
                 "windowWidth": info.window_width,
             }))
-            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to serialize JSON: {}", e))))?;
+            .map_err(|e| napi::Error::from_reason(format!("Failed to serialize JSON: {}", e)))?;
             
             std::fs::write(&options.output_path, json)
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to write JSON file: {}", e))))?;
+                .map_err(|e| napi::Error::from_reason(format!("Failed to write JSON file: {}", e)))?;
             
             return Ok(format!("Pixel data metadata saved to {}", options.output_path));
         }
@@ -793,13 +944,13 @@ impl DicomFile {
         // Handle raw format without decoding
         if matches!(format, PixelDataFormat::Raw) && !decode {
             let pixel_data = obj.element(tags::PIXEL_DATA)
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
+                .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
             
             let data = pixel_data.to_bytes()
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?;
+                .map_err(|e| napi::Error::from_reason(format!("Failed to read pixel data: {}", e)))?;
             
             std::fs::write(&options.output_path, &data)
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to write file: {}", e))))?;
+                .map_err(|e| napi::Error::from_reason(format!("Failed to write file: {}", e)))?;
             
             return Ok(format!("Raw pixel data saved to {} ({} bytes)", options.output_path, data.len()));
         }
@@ -807,42 +958,52 @@ impl DicomFile {
         // Decoding required beyond this point
         #[cfg(not(feature = "transcode"))]
         {
-            return Err(JsError::from(napi::Error::from_reason(
+            return Err(napi::Error::from_reason(
                 "Pixel data decoding requires the 'transcode' feature. Rebuild with --features transcode".to_string()
-            )));
+            ));
         }
         
         #[cfg(feature = "transcode")]
         {
-            // Decode pixel data
-            let decoded = obj.decode_pixel_data()
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to decode pixel data: {}", e))))?;
-            
-            // Get pixel data info
+            // Get pixel data info first (need to drop lock first)
+            drop(dicom_ref);
             let info = self.get_pixel_data_info()?;
             
-            // Convert decoded data to bytes
-            // The DecodedPixelData provides methods to access pixel values
-            // For simplicity, we'll convert to a raw byte representation
-            let bytes = decoded.to_vec()
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert pixel data: {}", e))))?;
+            // Re-acquire lock for pixel data access
+            let dicom_ref = self.dicom_file.lock().unwrap();
+            let obj = dicom_ref.as_ref().unwrap();
+            
+            // Get pixel data (decode if compressed, otherwise get raw)
+            let bytes = if info.is_compressed {
+                let decoded = obj.decode_pixel_data()
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to decode pixel data: {}", e)))?;
+                decoded.to_vec()
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to convert pixel data: {}", e)))?
+            } else {
+                // For uncompressed data, just get raw bytes
+                let pixel_data = obj.element(tags::PIXEL_DATA)
+                    .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
+                pixel_data.to_bytes()
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to read pixel data: {}", e)))?
+                    .to_vec()
+            };
             
             // Handle frame extraction if requested
             if let Some(frame_num) = options.frame_number {
                 if frame_num >= info.frames {
-                    return Err(JsError::from(napi::Error::from_reason(
+                    return Err(napi::Error::from_reason(
                         format!("Frame number {} out of range (0-{})", frame_num, info.frames - 1)
-                    )));
+                    ));
                 }
                 // TODO: Extract specific frame
-                return Err(JsError::from(napi::Error::from_reason(
+                return Err(napi::Error::from_reason(
                     "Frame extraction not yet implemented. Use decode=false for raw extraction.".to_string()
-                )));
+                ));
             }
             
             // Save decoded data
             std::fs::write(&options.output_path, &bytes)
-                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to write file: {}", e))))?;
+                .map_err(|e| napi::Error::from_reason(format!("Failed to write file: {}", e)))?;
             
             Ok(format!(
                 "Decoded pixel data saved to {} ({} bytes, {}x{}, {} frames)",
@@ -869,45 +1030,27 @@ impl DicomFile {
      * @example
      * ```typescript
      * const file = new DicomFile();
-     * file.open('image.dcm');
-     * file.saveAsJson('output.json', true);
+     * await file.open('image.dcm');
+     * await file.saveAsJson('output.json', true);
      * ```
      */
     #[napi]
-    pub fn save_as_json(&self, path: String, pretty: Option<bool>) -> napi::Result<String> {
-        if self.dicom_file.borrow().is_none() {
-            return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
-        }
+    pub async fn save_as_json(&self, path: String, pretty: Option<bool>) -> napi::Result<String> {
+        // Use helper method to get JSON string
+        let json_string = self.dicom_to_json_string(pretty)?;
         
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
-        
-        rt.block_on(async {
-            let dicom_ref = self.dicom_file.borrow();
-            let obj = dicom_ref.as_ref().unwrap();
-            let pretty_print = pretty.unwrap_or(true);
-            
-            let json_string = if pretty_print {
-                dicom_json::to_string_pretty(obj)
-                    .map_err(|e| napi::Error::from_reason(format!("Failed to convert to JSON: {}", e)))?
-            } else {
-                dicom_json::to_string(obj)
-                    .map_err(|e| napi::Error::from_reason(format!("Failed to convert to JSON: {}", e)))?
-            };
-            
-            match self.storage_config.backend {
-                StorageBackend::S3 => {
-                    self.write_to_s3(&path, json_string.as_bytes()).await?;
-                    Ok(format!("DICOM saved as JSON to S3: {} ({} bytes)", path, json_string.len()))
-                },
-                StorageBackend::Filesystem => {
-                    let resolved_path = self.resolve_path(&path);
-                    std::fs::write(&resolved_path, &json_string)
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to write JSON file: {}", e)))?;
-                    Ok(format!("DICOM saved as JSON to {} ({} bytes)", resolved_path.display(), json_string.len()))
-                }
+        match self.storage_config.backend {
+            StorageBackend::S3 => {
+                self.write_to_s3(&path, json_string.as_bytes()).await?;
+                Ok(format!("DICOM saved as JSON to S3: {} ({} bytes)", path, json_string.len()))
+            },
+            StorageBackend::Filesystem => {
+                let resolved_path = self.resolve_path(&path);
+                std::fs::write(&resolved_path, &json_string)
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to write JSON file: {}", e)))?;
+                Ok(format!("DICOM saved as JSON to {} ({} bytes)", resolved_path.display(), json_string.len()))
             }
-        })
+        }
     }    /**
      * Save the currently opened DICOM file (regardless of original format) as standard DICOM.
      * 
@@ -921,42 +1064,414 @@ impl DicomFile {
      * @example
      * ```typescript
      * const file = new DicomFile();
-     * file.openJson('input.json');
-     * file.saveAsDicom('output.dcm');
+     * await file.openJson('input.json');
+     * await file.saveAsDicom('output.dcm');
      * ```
      */
     #[napi]
-    pub fn save_as_dicom(&self, path: String) -> napi::Result<String> {
-        if self.dicom_file.borrow().is_none() {
+    pub async fn save_as_dicom(&self, path: String) -> napi::Result<String> {
+        if self.dicom_file.lock().unwrap().is_none() {
             return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
         }
         
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create runtime: {}", e)))?;
+        match self.storage_config.backend {
+            StorageBackend::S3 => {
+                // Write to buffer without holding borrow across await
+                let buffer = {
+                    let dicom_ref = self.dicom_file.lock().unwrap();
+                    let obj = dicom_ref.as_ref().unwrap();
+                    let mut buf = Vec::new();
+                    obj.write_all(&mut buf)
+                        .map_err(|e| napi::Error::from_reason(format!("Failed to write DICOM to buffer: {}", e)))?;
+                    buf
+                }; // borrow dropped here
+                
+                // Upload to S3
+                self.write_to_s3(&path, &buffer).await?;
+                Ok(format!("DICOM file saved to S3: {} ({} bytes)", path, buffer.len()))
+            },
+            StorageBackend::Filesystem => {
+                let resolved_path = self.resolve_path(&path);
+                let dicom_ref = self.dicom_file.lock().unwrap();
+                let obj = dicom_ref.as_ref().unwrap();
+                obj.write_to_file(&resolved_path)
+                    .map_err(|e| napi::Error::from_reason(format!("Failed to write DICOM file: {}", e)))?;
+                Ok(format!("DICOM file saved to {}", resolved_path.display()))
+            }
+        }
+    }
+
+    /**
+     * Get the DICOM file as a JSON string.
+     * 
+     * Converts the entire DICOM dataset to JSON format (DICOM Part 18 JSON Model).
+     * Returns the JSON string directly without writing to a file. Use `saveAsJson()`
+     * if you want to save to a file instead.
+     * 
+     * @param pretty - Whether to format the JSON with indentation (default: true)
+     * @returns JSON string representing the DICOM file
+     * @throws Error if no file is opened or serialization fails
+     * 
+     * @example
+     * ```typescript
+     * const file = new DicomFile();
+     * await file.open('scan.dcm');
+     * 
+     * // Get pretty-printed JSON
+     * const json = file.toJson(true);
+     * const obj = JSON.parse(json);
+     * console.log(obj);
+     * 
+     * // Get compact JSON
+     * const compactJson = file.toJson(false);
+     * 
+     * file.close();
+     * ```
+     */
+    #[napi]
+    pub fn to_json(&self, pretty: Option<bool>) -> Result<String, JsError> {
+        self.dicom_to_json_string(pretty)
+            .map_err(|e| JsError::from(e))
+    }
+
+    /**
+     * Get raw pixel data as a Buffer.
+     * 
+     * Extracts the raw pixel data bytes from the DICOM file's PixelData element (7FE0,0010).
+     * Returns the data as-is without any decoding or decompression. For compressed transfer
+     * syntaxes, the data will be in its compressed form.
+     * 
+     * To save to a file instead, use `saveRawPixelData()`.
+     * 
+     * @returns Buffer containing the raw pixel data bytes
+     * @throws Error if no file is opened or pixel data not found
+     * 
+     * @example
+     * ```typescript
+     * const file = new DicomFile();
+     * await file.open('image.dcm');
+     * 
+     * const pixelBuffer = file.getPixelData();
+     * console.log(`Pixel data size: ${pixelBuffer.length} bytes`);
+     * 
+     * // Process the buffer
+     * processPixelData(pixelBuffer);
+     * 
+     * file.close();
+     * ```
+     */
+    #[napi]
+    pub fn get_pixel_data(&self) -> Result<napi::bindgen_prelude::Buffer, JsError> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
         
-        rt.block_on(async {
-            let dicom_ref = self.dicom_file.borrow();
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+        
+        let pixel_data = obj.element(tags::PIXEL_DATA)
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
+        
+        let data = pixel_data.to_bytes()
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?;
+        
+        Ok(data.to_vec().into())
+    }
+
+    /**
+     * Decode and get pixel data as a Buffer.
+     * 
+     * Decodes compressed or encapsulated pixel data and returns it as raw uncompressed bytes.
+     * Requires the 'transcode' feature to be enabled at build time. For uncompressed data,
+     * use `getPixelData()` instead for better performance.
+     * 
+     * @returns Buffer containing decoded pixel data
+     * @throws Error if no file is opened, transcode feature not enabled, or decoding fails
+     * 
+     * @example
+     * ```typescript
+     * const file = new DicomFile();
+     * await file.open('compressed-image.dcm');
+     * 
+     * const info = file.getPixelDataInfo();
+     * if (info.isCompressed) {
+     *     // Decode compressed data
+     *     const decodedBuffer = file.getDecodedPixelData();
+     *     console.log(`Decoded size: ${decodedBuffer.length} bytes`);
+     * }
+     * 
+     * file.close();
+     * ```
+     */
+    #[napi]
+    pub fn get_decoded_pixel_data(&self) -> Result<napi::bindgen_prelude::Buffer, JsError> {
+        #[cfg(not(feature = "transcode"))]
+        {
+            return Err(JsError::from(napi::Error::from_reason(
+                "Pixel data decoding requires the 'transcode' feature. Rebuild with --features transcode".to_string()
+            )));
+        }
+        
+        #[cfg(feature = "transcode")]
+        {
+            if self.dicom_file.lock().unwrap().is_none() {
+                return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+            }
+            
+            let dicom_ref = self.dicom_file.lock().unwrap();
             let obj = dicom_ref.as_ref().unwrap();
             
-            match self.storage_config.backend {
-                StorageBackend::S3 => {
-                    // Write to buffer first
-                    let mut buffer = Vec::new();
-                    obj.write_all(&mut buffer)
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to write DICOM to buffer: {}", e)))?;
-                    
-                    // Upload to S3
-                    self.write_to_s3(&path, &buffer).await?;
-                    Ok(format!("DICOM file saved to S3: {} ({} bytes)", path, buffer.len()))
-                },
-                StorageBackend::Filesystem => {
-                    let resolved_path = self.resolve_path(&path);
-                    obj.write_to_file(&resolved_path)
-                        .map_err(|e| napi::Error::from_reason(format!("Failed to write DICOM file: {}", e)))?;
-                    Ok(format!("DICOM file saved to {}", resolved_path.display()))
-                }
+            let decoded = obj.decode_pixel_data()
+                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to decode pixel data: {}", e))))?;
+            
+            let bytes = decoded.to_vec()
+                .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert pixel data: {}", e))))?;
+            
+            Ok(bytes.into())
+        }
+    }
+
+    /**
+     * Get decoded and processed pixel data as a Buffer with advanced options.
+     * 
+     * This method combines decoding with optional processing steps like frame extraction,
+     * windowing (VOI LUT), and 8-bit conversion. Returns processed pixel data in-memory
+     * without file I/O. Requires the 'transcode' feature to be enabled at build time.
+     * 
+     * **Processing Pipeline:**
+     * 1. Decode/decompress pixel data
+     * 2. Extract specific frame (if frameNumber specified)
+     * 3. Apply windowing/VOI LUT (if requested)
+     * 4. Convert to 8-bit (if requested)
+     * 
+     * @param options - Processing options (all optional)
+     * @returns Buffer containing processed pixel data
+     * @throws Error if no file is opened, transcode feature not enabled, or processing fails
+     * 
+     * @example
+     * ```typescript
+     * const file = new DicomFile();
+     * await file.open('ct-scan.dcm');
+     * 
+     * // Get decoded data with default windowing from file
+     * const windowed = file.getProcessedPixelData({
+     *     applyVoiLut: true,
+     *     convertTo8bit: true
+     * });
+     * 
+     * // Custom window for bone visualization (CT)
+     * const boneWindow = file.getProcessedPixelData({
+     *     windowCenter: 300,
+     *     windowWidth: 1500,
+     *     convertTo8bit: true
+     * });
+     * 
+     * // Extract specific frame from multi-frame image
+     * const frame5 = file.getProcessedPixelData({
+     *     frameNumber: 5
+     * });
+     * 
+     * // Complete processing pipeline
+     * const processed = file.getProcessedPixelData({
+     *     frameNumber: 0,
+     *     applyVoiLut: true,
+     *     windowCenter: 40,    // Soft tissue window
+     *     windowWidth: 400,
+     *     convertTo8bit: true
+     * });
+     * 
+     * file.close();
+     * ```
+     */
+    #[napi]
+    pub fn get_processed_pixel_data(&self, options: Option<PixelDataProcessingOptions>) -> Result<napi::bindgen_prelude::Buffer, JsError> {
+        #[cfg(not(feature = "transcode"))]
+        {
+            return Err(JsError::from(napi::Error::from_reason(
+                "Pixel data processing requires the 'transcode' feature. Rebuild with --features transcode".to_string()
+            )));
+        }
+        
+        #[cfg(feature = "transcode")]
+        {
+            if self.dicom_file.lock().unwrap().is_none() {
+                return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
             }
-        })
+            
+            let opts = options.unwrap_or(PixelDataProcessingOptions {
+                frame_number: None,
+                apply_voi_lut: None,
+                window_center: None,
+                window_width: None,
+                convert_to_8bit: None,
+            });
+            
+            // Get pixel data info for processing
+            let info = self.get_pixel_data_info()
+                .map_err(|e| JsError::from(e))?;
+            
+            let dicom_ref = self.dicom_file.lock().unwrap();
+            let obj = dicom_ref.as_ref().unwrap();
+            
+            // Step 1: Get pixel data (decode if compressed, otherwise get raw)
+            let mut bytes = if info.is_compressed {
+                let decoded = obj.decode_pixel_data()
+                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to decode pixel data: {}", e))))?;
+                decoded.to_vec()
+                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert pixel data: {}", e))))?
+            } else {
+                // For uncompressed data, just get raw bytes
+                let pixel_data = obj.element(tags::PIXEL_DATA)
+                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
+                pixel_data.to_bytes()
+                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?
+                    .to_vec()
+            };
+            
+            // Step 3: Extract specific frame if requested
+            if let Some(frame_num) = opts.frame_number {
+                if frame_num >= info.frames {
+                    return Err(JsError::from(napi::Error::from_reason(
+                        format!("Frame number {} out of range (0-{})", frame_num, info.frames - 1)
+                    )));
+                }
+                
+                // Calculate frame size
+                let bytes_per_pixel = (info.bits_allocated / 8) as usize;
+                let frame_size = info.width as usize * info.height as usize * 
+                                info.samples_per_pixel as usize * bytes_per_pixel;
+                
+                let start = frame_num as usize * frame_size;
+                let end = start + frame_size;
+                
+                if end > bytes.len() {
+                    return Err(JsError::from(napi::Error::from_reason(
+                        format!("Frame extraction failed: calculated size {} exceeds buffer size {}", end, bytes.len())
+                    )));
+                }
+                
+                bytes = bytes[start..end].to_vec();
+            }
+            
+            // Step 4: Apply windowing if requested
+            let apply_windowing = opts.apply_voi_lut.unwrap_or(false) || 
+                                 opts.window_center.is_some() || 
+                                 opts.window_width.is_some();
+            
+            if apply_windowing && info.bits_allocated == 16 {
+                // Get window parameters
+                let (window_center, window_width) = if opts.window_center.is_some() || opts.window_width.is_some() {
+                    // Use provided parameters (require both if one is provided)
+                    let center = opts.window_center.ok_or_else(|| 
+                        JsError::from(napi::Error::from_reason("windowCenter required when windowWidth is specified".to_string())))?;
+                    let width = opts.window_width.ok_or_else(|| 
+                        JsError::from(napi::Error::from_reason("windowWidth required when windowCenter is specified".to_string())))?;
+                    (center, width)
+                } else if opts.apply_voi_lut.unwrap_or(false) {
+                    // Use parameters from file
+                    let center = info.window_center.ok_or_else(|| 
+                        JsError::from(napi::Error::from_reason("No WindowCenter found in file. Provide windowCenter manually.".to_string())))?;
+                    let width = info.window_width.ok_or_else(|| 
+                        JsError::from(napi::Error::from_reason("No WindowWidth found in file. Provide windowWidth manually.".to_string())))?;
+                    (center, width)
+                } else {
+                    return Err(JsError::from(napi::Error::from_reason("Windowing requested but no parameters available".to_string())));
+                };
+                
+                // Apply rescale if available
+                let rescale_slope = info.rescale_slope.unwrap_or(1.0);
+                let rescale_intercept = info.rescale_intercept.unwrap_or(0.0);
+                
+                // Calculate window bounds
+                let window_min = window_center - window_width / 2.0;
+                let window_max = window_center + window_width / 2.0;
+                
+                // Process each pixel
+                let pixel_count = bytes.len() / 2; // 16-bit pixels
+                let mut windowed = if opts.convert_to_8bit.unwrap_or(false) {
+                    Vec::with_capacity(pixel_count)
+                } else {
+                    Vec::with_capacity(bytes.len())
+                };
+                
+                for i in 0..pixel_count {
+                    let raw_value = if info.pixel_representation == 0 {
+                        // Unsigned
+                        u16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as f64
+                    } else {
+                        // Signed
+                        i16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as f64
+                    };
+                    
+                    // Apply rescale
+                    let rescaled = raw_value * rescale_slope + rescale_intercept;
+                    
+                    // Apply windowing
+                    let windowed_value = if rescaled <= window_min {
+                        0.0
+                    } else if rescaled >= window_max {
+                        if opts.convert_to_8bit.unwrap_or(false) {
+                            255.0
+                        } else {
+                            65535.0
+                        }
+                    } else {
+                        let normalized = (rescaled - window_min) / window_width;
+                        if opts.convert_to_8bit.unwrap_or(false) {
+                            normalized * 255.0
+                        } else {
+                            normalized * 65535.0
+                        }
+                    };
+                    
+                    if opts.convert_to_8bit.unwrap_or(false) {
+                        windowed.push(windowed_value as u8);
+                    } else {
+                        let value_u16 = windowed_value as u16;
+                        windowed.extend_from_slice(&value_u16.to_le_bytes());
+                    }
+                }
+                
+                bytes = windowed;
+            } else if opts.convert_to_8bit.unwrap_or(false) && info.bits_allocated == 16 {
+                // Convert to 8-bit without windowing (simple scaling)
+                let pixel_count = bytes.len() / 2;
+                let mut converted = Vec::with_capacity(pixel_count);
+                
+                for i in 0..pixel_count {
+                    let value = if info.pixel_representation == 0 {
+                        u16::from_le_bytes([bytes[i*2], bytes[i*2+1]])
+                    } else {
+                        i16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as u16
+                    };
+                    // Simple bit shift (loses precision but fast)
+                    converted.push((value >> 8) as u8);
+                }
+                
+                bytes = converted;
+            }
+            
+            Ok(bytes.into())
+        }
+    }
+
+    // Helper method to convert DICOM to JSON string (used by both to_json and save_as_json)
+    fn dicom_to_json_string(&self, pretty: Option<bool>) -> napi::Result<String> {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
+        }
+        
+        let pretty_print = pretty.unwrap_or(true);
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+        
+        if pretty_print {
+            dicom_json::to_string_pretty(obj)
+                .map_err(|e| napi::Error::from_reason(format!("Failed to convert to JSON: {}", e)))
+        } else {
+            dicom_json::to_string(obj)
+                .map_err(|e| napi::Error::from_reason(format!("Failed to convert to JSON: {}", e)))
+        }
     }
 
     /**
@@ -981,7 +1496,7 @@ impl DicomFile {
      */
     #[napi]
     pub fn close(&self) {
-        *self.dicom_file.borrow_mut() = None;
+        *self.dicom_file.lock().unwrap() = None;
     }
 
     fn check_file(file: &Path) -> Result<DicomFileMeta, Error> {
@@ -1004,41 +1519,4 @@ impl DicomFile {
             sop_instance_uid: storage_sop_instance_uid.to_string(),
         })
     }
-}
-
-/**
- * Standalone utility to extract raw pixel data from a DICOM file.
- * 
- * This is a convenience function that opens a DICOM file, extracts the raw pixel data,
- * and saves it to a file in a single operation. For repeated operations on the same file,
- * prefer using the DicomFile class with `open()` and `saveRawPixelData()`.
- * 
- * @param filePath - Path to the source DICOM file
- * @param outPath - Path where the raw pixel data will be saved
- * @returns Success message with the number of bytes written
- * @throws Error if the file cannot be opened, pixel data is missing, or write fails
- * 
- * @example
- * ```typescript
- * import { saveRawPixelData } from '@nuxthealth/node-dicom';
- * 
- * saveRawPixelData('/path/to/image.dcm', '/path/to/output.raw');
- * ```
- */
-#[napi]
-pub fn save_raw_pixel_data(file_path: String, out_path: String) -> Result<String, JsError> {
-    let file = PathBuf::from(file_path);
-    let dicom_file = open_file(file)
-        .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to open DICOM file: {}", e))))?;
-
-    let pixel_data = dicom_file.element(tags::PIXEL_DATA)
-        .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
-
-    let data = pixel_data.to_bytes()
-        .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?;
-
-    std::fs::write(&out_path, &data)
-        .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to write file: {}", e))))?;
-
-    Ok(format!("Pixel data saved successfully ({} bytes)", data.len()))
 }

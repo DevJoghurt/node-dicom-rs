@@ -1,412 +1,760 @@
 # Tag Extraction Guide
 
-This guide covers the flexible tag extraction system used across DicomFile and StoreSCP.
+Complete guide to extracting DICOM metadata tags across all components of node-dicom-rs.
 
-## Grouping Strategies
+## Table of Contents
 
-The library supports four different grouping strategies for organizing extracted DICOM tags:
+- [Overview](#overview)
+- [DicomFile Tag Extraction](#dicomfile-tag-extraction)
+- [StoreScp Tag Extraction](#storescp-tag-extraction)
+- [Tag Name Formats](#tag-name-formats)
+- [Custom Tags for Private Data](#custom-tags-for-private-data)
+- [Common Tag Sets](#common-tag-sets)
+- [Best Practices](#best-practices)
 
-### ByScope (Default)
+## Overview
 
-Groups tags according to DICOM hierarchy levels based on their scope in the DICOM standard:
+Tag extraction allows you to retrieve specific DICOM metadata from files. The node-dicom-rs library provides consistent, type-safe tag extraction across three main components:
 
-```typescript
-const json = file.extract([
-    'PatientName', 'PatientID',           // Patient scope
-    'StudyDate', 'StudyDescription',      // Study scope
-    'Modality', 'SeriesDescription',      // Series scope
-    'InstanceNumber', 'SliceThickness'    // Instance scope
-], undefined, 'ByScope');
+- **DicomFile**: Extract tags from files on disk or S3
+- **StoreScp**: Extract tags when receiving files over the network
+- **StoreScu**: Access file metadata before sending
 
-const data = JSON.parse(json);
-// {
-//   patient: { PatientName: "...", PatientID: "..." },
-//   study: { StudyDate: "...", StudyDescription: "..." },
-//   series: { Modality: "...", SeriesDescription: "..." },
-//   instance: { InstanceNumber: "...", SliceThickness: "..." },
-//   equipment: { ... }  // If equipment tags are extracted
-// }
-```
+All extraction methods return **flat key-value structures** for simple, direct access to tag values.
 
-**Tag Scope Classification:**
-- **Patient**: All tags in group (0010,xxxx) - Patient demographics
-- **Study**: Study-related tags (StudyDate, StudyDescription, AccessionNumber, etc.)
-- **Series**: Series-related tags (Modality, SeriesNumber, SeriesDescription, etc.)
-- **Instance**: Image instance tags (InstanceNumber, SliceLocation, ImagePosition, etc.)
-- **Equipment**: Equipment/acquisition tags in group (0018,1xxx)
+## DicomFile Tag Extraction
 
-**Use when:** You want proper DICOM hierarchy organization
+### Basic Extraction
 
-### Flat
-
-All tags in a single flat object with no grouping:
+Extract specific tags from a DICOM file:
 
 ```typescript
-const json = file.extract([
-    'PatientName',
-    'StudyDate',
-    'Modality',
-    'InstanceNumber'
-], undefined, 'Flat');
+import { DicomFile } from '@nuxthealth/node-dicom';
 
-const data = JSON.parse(json);
-// {
-//   PatientName: "DOE^JOHN",
-//   StudyDate: "20231201",
-//   Modality: "CT",
-//   InstanceNumber: "1"
-// }
-```
-
-**Use when:** You want simple key-value access without hierarchy
-
-### StudyLevel
-
-Two-level grouping: study-level data (Patient + Study) and instance-level data (everything else):
-
-```typescript
-const json = file.extract([
-    'PatientName', 'StudyDate',           // Study level
-    'Modality', 'InstanceNumber'          // Instance level
-], undefined, 'StudyLevel');
-
-const data = JSON.parse(json);
-// {
-//   study_level: {
-//     PatientName: "...",
-//     StudyDate: "..."
-//   },
-//   instance_level: {
-//     Modality: "...",
-//     InstanceNumber: "..."
-//   }
-// }
-```
-
-**Use when:** You want to separate "per-study" data from "per-instance" data
-
-### Custom
-
-Currently behaves the same as `ByScope`. Can be extended for user-defined grouping rules in the future.
-
-## How Grouping Affects Events
-
-The grouping strategy affects both `DicomFile.extract()` and `StoreSCP` events:
-
-### DicomFile.extract()
-
-The grouping strategy controls the structure of the returned JSON:
-
-```typescript
 const file = new DicomFile();
 file.open('./scan.dcm');
 
-// ByScope: Hierarchical
-const scoped = JSON.parse(file.extract(tags, undefined, 'ByScope'));
-console.log(scoped.patient.PatientName);
+// Extract tags - always returns flat structure
+const data = file.extract(['PatientName', 'StudyDate', 'Modality']);
 
-// Flat: Direct access
-const flat = JSON.parse(file.extract(tags, undefined, 'Flat'));
-console.log(flat.PatientName);
+console.log('Patient:', data.PatientName);     // "DOE^JOHN"
+console.log('Study Date:', data.StudyDate);    // "20240101"
+console.log('Modality:', data.Modality);       // "CT"
 
-// StudyLevel: Two-level
-const studyLevel = JSON.parse(file.extract(tags, undefined, 'StudyLevel'));
-console.log(studyLevel.study_level.PatientName);
+file.close();
 ```
 
-### StoreScp OnFileStored Event
+### Multiple Tags
 
-The `data` field structure matches the grouping strategy:
-
-```typescript
-const receiver = new StoreScp({
-    extractTags: ['PatientName', 'StudyDate', 'Modality'],
-    groupingStrategy: 'ByScope'  // or 'Flat', 'StudyLevel'
-});
-
-receiver.addEventListener('OnFileStored', (event) => {
-    // With ByScope:
-    console.log(event.tags.patient?.PatientName);
-    
-    // With Flat:
-    console.log(event.tags.PatientName);
-    
-    // With StudyLevel:
-    console.log(event.tags.study_level?.PatientName);
-});
-```
-
-### StoreScp OnStudyCompleted Event
-
-The grouping strategy controls where data appears in the hierarchy:
-
-**ByScope**: Data is distributed across hierarchy levels
+Extract many tags at once:
 
 ```typescript
-{
-    study_instance_uid: "...",
-    tags: {                        // Study + Patient tags only
-        PatientName: "...",
-        StudyDate: "..."
-    },
-    series: [{
-        series_instance_uid: "...",
-        tags: {                    // Series tags only
-            Modality: "CT",
-            SeriesDescription: "..."
-        },
-        instances: [{
-            sop_instance_uid: "...",
-            file: "...",
-            tags: {                // Instance + Equipment tags only
-                InstanceNumber: "1",
-                SliceThickness: "5.0"
-            }
-        }]
-    }]
-}
-```
-
-**Flat**: All data at instance level only
-
-```typescript
-{
-    study_instance_uid: "...",
-    tags: {},                      // Empty
-    series: [{
-        series_instance_uid: "...",
-        tags: {},                  // Empty
-        instances: [{
-            sop_instance_uid: "...",
-            file: "...",
-            tags: {                // ALL tags here
-                PatientName: "...",
-                StudyDate: "...",
-                Modality: "CT",
-                InstanceNumber: "1"
-            }
-        }]
-    }]
-}
-```
-
-**StudyLevel**: Study-level at study, rest at instance
-
-```typescript
-{
-    study_instance_uid: "...",
-    tags: {                        // Patient + Study tags
-        PatientName: "...",
-        StudyDate: "..."
-    },
-    series: [{
-        series_instance_uid: "...",
-        tags: {},                  // Empty
-        instances: [{
-            sop_instance_uid: "...",
-            file: "...",
-            tags: {                // Series + Instance + Equipment
-                Modality: "CT",
-                InstanceNumber: "1",
-                SliceThickness: "5.0"
-            }
-        }]
-    }]
-}
-```
-
-## Custom Tags
-
-Extract private or vendor-specific tags with user-defined names:
-
-```typescript
-const json = file.extract(
-    ['PatientName', 'StudyDate'],  // Standard tags
-    [                              // Custom tags
-        { tag: '00091001', name: 'VendorID' },
-        { tag: '00091002', name: 'ScannerType' },
-        { tag: '(0009,1010)', name: 'CustomField' }  // Also supports (GGGG,EEEE) format
-    ],
-    'ByScope'
-);
-
-const data = JSON.parse(json);
-// {
-//   patient: { PatientName: "..." },
-//   study: { StudyDate: "..." },
-//   custom: {
-//     VendorID: "...",
-//     ScannerType: "...",
-//     CustomField: "..."
-//   }
-// }
-```
-
-Custom tags always appear in a separate `custom` group (for `ByScope`/`StudyLevel`), or mixed with standard tags (for `Flat`).
-
-### In StoreScp
-
-```typescript
-const receiver = new StoreScp({
-    extractTags: ['PatientName', 'StudyDate'],
-    extractCustomTags: [
-        { tag: '00091001', name: 'VendorID' }
-    ],
-    groupingStrategy: 'ByScope'
-});
-```
-
-## Helper Functions
-
-### getCommonTagSets()
-
-Get predefined sets of commonly used DICOM tags:
-
-```typescript
-import { getCommonTagSets } from '@nuxthealth/node-dicom';
-
-const tags = getCommonTagSets();
-
-// Available sets:
-tags.patientBasic      // Patient name, ID, birth date, sex (4 tags)
-tags.patientExtended   // Additional patient info (6 tags)
-tags.studyBasic        // Study date, time, description, ID (5 tags)
-tags.studyExtended     // Accession number, referring physician (4 tags)
-tags.seriesBasic       // Series number, description, modality (5 tags)
-tags.instanceBasic     // Instance number, creation date/time (3 tags)
-tags.imagePixel        // Rows, columns, bits, photometric interpretation (8 tags)
-tags.imageGeometry     // Pixel spacing, orientation, slice thickness (6 tags)
-tags.ct                // CT-specific: KVP, exposure, kernel (8 tags)
-tags.mr                // MR-specific: echo time, TR, flip angle (10 tags)
-tags.us                // Ultrasound-specific (5 tags)
-tags.pet               // PET-specific: radiopharmaceutical, units (6 tags)
-tags.equipment         // Manufacturer, model, software (4 tags)
-
-// Use in extraction
-const json = file.extract(tags.patientBasic, undefined, 'Flat');
-```
-
-### combineTags()
-
-Combine multiple tag sets into one array:
-
-```typescript
-import { getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
-
-const tags = getCommonTagSets();
-
-const allBasic = combineTags([
-    tags.patientBasic,
-    tags.studyBasic,
-    tags.seriesBasic,
-    tags.instanceBasic
+const data = file.extract([
+    'PatientName',
+    'PatientID',
+    'PatientBirthDate',
+    'PatientSex',
+    'StudyInstanceUID',
+    'StudyDate',
+    'StudyDescription',
+    'Modality',
+    'SeriesDescription',
+    'SeriesNumber',
+    'InstanceNumber',
+    'SOPInstanceUID'
 ]);
 
-const ctComplete = combineTags([
-    tags.patientBasic,
-    tags.studyBasic,
-    tags.ct,
-    tags.imagePixel,
-    tags.imageGeometry
-]);
-
-const json = file.extract(ctComplete, undefined, 'ByScope');
+// All tags in flat structure: { PatientName: "...", PatientID: "...", ... }
 ```
 
-### Using with StoreScp
+### Using Predefined Tag Sets
 
-```typescript
-import { StoreScp, getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
-
-const tags = getCommonTagSets();
-
-const receiver = new StoreScp({
-    port: 4446,
-    extractTags: combineTags([
-        tags.patientBasic,
-        tags.studyBasic,
-        tags.ct
-    ]),
-    groupingStrategy: 'ByScope'
-});
-```
-
-## Complete Example: Different Strategies
+Instead of manually listing tags, use predefined tag sets:
 
 ```typescript
 import { DicomFile, getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
 
 const file = new DicomFile();
-file.open('./ct_scan.dcm');
+file.open('./scan.dcm');
 
-const tags = getCommonTagSets();
-const extractTags = combineTags([
-    tags.patientBasic,
-    tags.studyBasic,
-    tags.seriesBasic,
-    tags.ct
-]);
+const tagSets = getCommonTagSets();
 
-console.log('=== ByScope Strategy ===');
-const byScope = JSON.parse(file.extract(extractTags, undefined, 'ByScope'));
-console.log('Patient:', byScope.patient);
-console.log('Study:', byScope.study);
-console.log('Series:', byScope.series);
-console.log('Equipment:', byScope.equipment);
+// Extract patient demographics only
+const patientData = file.extract(tagSets.patientBasic);
+// { PatientName: "...", PatientID: "...", PatientBirthDate: "...", ... }
 
-console.log('\n=== Flat Strategy ===');
-const flat = JSON.parse(file.extract(extractTags, undefined, 'Flat'));
-console.log('All tags:', Object.keys(flat).length);
-console.log('PatientName:', flat.PatientName);
-console.log('Modality:', flat.Modality);
+// Extract study information
+const studyData = file.extract(tagSets.studyBasic);
 
-console.log('\n=== StudyLevel Strategy ===');
-const studyLevel = JSON.parse(file.extract(extractTags, undefined, 'StudyLevel'));
-console.log('Study Level:', Object.keys(studyLevel.study_level || {}));
-console.log('Instance Level:', Object.keys(studyLevel.instance_level || {}));
+// Extract comprehensive metadata
+const allData = file.extract(tagSets.default);
+// 42 common tags covering patient, study, series, instance, pixel info, and equipment
 
 file.close();
 ```
 
+### Modality-Specific Extraction
+
+Extract modality-specific parameters:
+
+```typescript
+const tagSets = getCommonTagSets();
+
+// CT-specific tags
+const ctTags = combineTags([
+    tagSets.default,
+    tagSets.ct
+]);
+const ctData = file.extract(ctTags);
+console.log('kVp:', ctData.KVP);
+console.log('Kernel:', ctData.ConvolutionKernel);
+
+// MR-specific tags
+const mrTags = combineTags([
+    tagSets.default,
+    tagSets.mr
+]);
+const mrData = file.extract(mrTags);
+console.log('TR:', mrData.RepetitionTime);
+console.log('TE:', mrData.EchoTime);
+console.log('Field Strength:', mrData.MagneticFieldStrength);
+
+// Ultrasound-specific tags
+const usTags = combineTags([
+    tagSets.default,
+    tagSets.ultrasound
+]);
+const usData = file.extract(usTags);
+console.log('Transducer:', usData.TransducerType);
+console.log('Frequency:', usData.TransducerFrequency);
+
+// PET/Nuclear Medicine
+const petTags = combineTags([
+    tagSets.default,
+    tagSets.petNm
+]);
+const petData = file.extract(petTags);
+console.log('Units:', petData.Units);
+console.log('Decay Correction:', petData.DecayCorrection);
+```
+
+### S3 File Extraction
+
+Extract tags from DICOM files stored in S3:
+
+```typescript
+const file = new DicomFile();
+
+// Open S3 file
+file.openS3({
+    bucket: 'dicom-archive',
+    key: 'studies/2024/CT-12345.dcm',
+    accessKey: 'YOUR_KEY',
+    secretKey: 'YOUR_SECRET',
+    endpoint: 'https://s3.amazonaws.com',
+    region: 'us-east-1'
+});
+
+// Extract tags (same API as local files)
+const data = file.extract(tagSets.default);
+
+file.close();
+```
+
+## StoreScp Tag Extraction
+
+StoreScp automatically extracts tags as files are received over the network.
+
+### OnFileStored Event - Flat Tags
+
+Extract tags for each received file:
+
+```typescript
+import { StoreScp, getCommonTagSets } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+const receiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'MY-SCP',
+    outDir: './received',
+    verbose: true,
+    // Specify tags to extract
+    extractTags: tagSets.default,
+    extractCustomTags: [] // Optional: custom tags
+});
+
+receiver.onFileStored((err, event) => {
+    if (err) return console.error('Error:', err);
+    
+    const data = event.data;
+    if (!data || !data.tags) return;
+    
+    // Tags are flat key-value pairs
+    console.log('Received file:', data.file);
+    console.log('Patient:', data.tags.PatientName);
+    console.log('Study:', data.tags.StudyDescription);
+    console.log('Modality:', data.tags.Modality);
+    console.log('Instance:', data.tags.InstanceNumber);
+    
+    // Direct access to any extracted tag
+    if (data.tags.SeriesDescription) {
+        console.log('Series:', data.tags.SeriesDescription);
+    }
+});
+
+receiver.listen();
+```
+
+### OnStudyCompleted Event - Hierarchical Tags
+
+When a study is complete, get hierarchical organization with flat tags at each level:
+
+```typescript
+receiver.onStudyCompleted((err, event) => {
+    if (err) return console.error('Error:', err);
+    
+    const study = event.data?.study;
+    if (!study) return;
+    
+    console.log('Study completed:', study.studyInstanceUid);
+    console.log('Total series:', study.series.length);
+    
+    // Study-level tags (Patient + Study scope)
+    if (study.tags) {
+        console.log('Patient Name:', study.tags.PatientName);
+        console.log('Study Date:', study.tags.StudyDate);
+        console.log('Study Description:', study.tags.StudyDescription);
+    }
+    
+    // Series-level tags
+    study.series.forEach(series => {
+        console.log(`Series ${series.seriesInstanceUid}:`);
+        console.log(`  Modality: ${series.tags?.Modality}`);
+        console.log(`  Series Description: ${series.tags?.SeriesDescription}`);
+        console.log(`  Instances: ${series.instances.length}`);
+        
+        // Instance-level tags
+        series.instances.forEach(instance => {
+            console.log(`    Instance ${instance.sopInstanceUid}`);
+            console.log(`      Number: ${instance.tags?.InstanceNumber}`);
+            console.log(`      File: ${instance.file}`);
+            // Access any extracted tag at instance level
+            if (instance.tags?.ImageType) {
+                console.log(`      Type: ${instance.tags.ImageType}`);
+            }
+        });
+    });
+});
+```
+
+### Modality-Specific SCP Configuration
+
+Configure SCP to extract modality-specific tags:
+
+```typescript
+const tagSets = getCommonTagSets();
+
+// CT receiver - extract CT-specific parameters
+const ctReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'CT-SCP',
+    outDir: './ct-storage',
+    extractTags: combineTags([
+        tagSets.default,
+        tagSets.ct
+    ])
+});
+
+ctReceiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('CT Parameters:');
+        console.log('  kVp:', tags.KVP);
+        console.log('  Tube Current:', tags.XRayTubeCurrent);
+        console.log('  Kernel:', tags.ConvolutionKernel);
+        console.log('  Slice Thickness:', tags.SliceThickness);
+    }
+});
+
+// MR receiver - extract MR-specific parameters
+const mrReceiver = new StoreScp({
+    port: 4447,
+    callingAeTitle: 'MR-SCP',
+    outDir: './mr-storage',
+    extractTags: combineTags([
+        tagSets.default,
+        tagSets.mr
+    ])
+});
+
+mrReceiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('MR Parameters:');
+        console.log('  TR:', tags.RepetitionTime);
+        console.log('  TE:', tags.EchoTime);
+        console.log('  Field Strength:', tags.MagneticFieldStrength);
+        console.log('  Flip Angle:', tags.FlipAngle);
+    }
+});
+```
+
+## Tag Name Formats
+
+Tags can be specified in multiple formats:
+
+### Standard Names
+
+Use standard DICOM tag names (recommended):
+
+```typescript
+file.extract([
+    'PatientName',
+    'StudyDate',
+    'Modality',
+    'SeriesDescription'
+]);
+```
+
+Benefits:
+- Full TypeScript autocomplete support (300+ tags)
+- Clear and readable
+- IDE validation
+
+### Hex Format
+
+Use 8-digit hex format (without separators):
+
+```typescript
+file.extract([
+    '00100010',  // PatientName
+    '00080020',  // StudyDate
+    '00080060',  // Modality
+    '0008103E'   // SeriesDescription
+]);
+```
+
+### Parenthesized Format
+
+Use (GGGG,EEEE) format:
+
+```typescript
+file.extract([
+    '(0010,0010)',  // PatientName
+    '(0008,0020)',  // StudyDate
+    '(0008,0060)',  // Modality
+    '(0008,103E)'   // SeriesDescription
+]);
+```
+
+### Mixed Formats
+
+All formats can be mixed:
+
+```typescript
+file.extract([
+    'PatientName',      // Standard name
+    '00080020',         // Hex
+    '(0008,0060)',      // Parenthesized
+    'SeriesDescription' // Standard name
+]);
+```
+
+## Custom Tags for Private Data
+
+Extract private or vendor-specific tags using custom tag definitions.
+
+### Creating Custom Tags
+
+```typescript
+import { DicomFile, createCustomTag } from '@nuxthealth/node-dicom';
+
+const file = new DicomFile();
+file.open('./scan-with-private-tags.dcm');
+
+// Define custom tags
+const customTags = [
+    createCustomTag('00091001', 'VendorID'),
+    createCustomTag('00091010', 'ScannerMode'),
+    createCustomTag('00431001', 'ImageQuality')
+];
+
+// Extract with custom tags
+const data = file.extract(
+    ['PatientName', 'StudyDate', 'Modality'],
+    customTags
+);
+console.log('Standard tags:', data.PatientName, data.StudyDate);
+console.log('Custom tags:', data.VendorID, data.ScannerMode);
+
+file.close();
+```
+
+### Vendor-Specific Tags
+
+Create libraries of vendor-specific tags:
+
+```typescript
+// GE private tags
+const geTags = [
+    createCustomTag('00091001', 'GE_PrivateCreator'),
+    createCustomTag('00091027', 'GE_ScanOptions'),
+    createCustomTag('00431001', 'GE_ImageFiltering')
+];
+
+// Siemens private tags
+const siemensTags = [
+    createCustomTag('00191008', 'Siemens_ImagingMode'),
+    createCustomTag('00191009', 'Siemens_SequenceInfo'),
+    createCustomTag('0029100C', 'Siemens_CoilString')
+];
+
+// Philips private tags
+const philipsTags = [
+    createCustomTag('20011001', 'Philips_ScanMode'),
+    createCustomTag('20011003', 'Philips_Contrast'),
+    createCustomTag('20051080', 'Philips_ReconParams')
+];
+
+// Dynamic selection based on manufacturer
+const manufacturerData = file.extract(['Manufacturer']);
+const manufacturer = manufacturerData.Manufacturer;
+
+const vendorTags = {
+    'GE': geTags,
+    'SIEMENS': siemensTags,
+    'Philips': philipsTags
+}[manufacturer] || [];
+
+const data = file.extract(tagSets.default, vendorTags);
+```
+
+### StoreScp with Custom Tags
+
+Extract custom tags in StoreScp:
+
+```typescript
+const customTags = [
+    createCustomTag('00091001', 'VendorID'),
+    createCustomTag('00431001', 'ProcessingFlag')
+];
+
+const receiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'MY-SCP',
+    outDir: './received',
+    extractTags: tagSets.default,
+    extractCustomTags: customTags
+});
+
+receiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('Standard:', tags.PatientName);
+        console.log('Custom:', tags.VendorID, tags.ProcessingFlag);
+    }
+});
+```
+
+## Common Tag Sets
+
+The library provides predefined tag sets for common use cases.
+
+### Available Tag Sets
+
+```typescript
+import { getCommonTagSets } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+// Patient demographics (7 tags)
+tagSets.patientBasic
+// ['PatientName', 'PatientID', 'PatientBirthDate', 'PatientSex', ...]
+
+// Study metadata (7 tags)
+tagSets.studyBasic
+// ['StudyInstanceUID', 'StudyDate', 'StudyTime', 'StudyDescription', ...]
+
+// Series metadata (8 tags)
+tagSets.seriesBasic
+// ['SeriesInstanceUID', 'SeriesNumber', 'SeriesDescription', 'Modality', ...]
+
+// Instance identifiers (5 tags)
+tagSets.instanceBasic
+// ['SOPInstanceUID', 'SOPClassUID', 'InstanceNumber', ...]
+
+// Image pixel info (9 tags)
+tagSets.imagePixelInfo
+// ['Rows', 'Columns', 'BitsAllocated', 'PixelSpacing', ...]
+
+// Equipment info (6 tags)
+tagSets.equipment
+// ['Manufacturer', 'ManufacturerModelName', 'DeviceSerialNumber', ...]
+
+// Modality-specific sets
+tagSets.ct          // CT parameters (6 tags)
+tagSets.mr          // MR parameters (6 tags)
+tagSets.ultrasound  // Ultrasound parameters (6 tags)
+tagSets.petNm       // PET/NM parameters (11 tags)
+tagSets.xa          // X-Ray Angiography (8 tags)
+tagSets.rt          // Radiation Therapy (11 tags)
+
+// Comprehensive default (42 tags)
+tagSets.default
+// Combines: patient, study, series, instance, pixel info, equipment
+```
+
+### Combining Tag Sets
+
+```typescript
+import { combineTags } from '@nuxthealth/node-dicom';
+
+// Combine multiple sets
+const comprehensiveTags = combineTags([
+    tagSets.patientBasic,
+    tagSets.studyBasic,
+    tagSets.seriesBasic,
+    tagSets.imagePixelInfo,
+    tagSets.ct
+]);
+
+// Add custom tags to predefined sets
+const customWorkflow = combineTags([
+    tagSets.default,
+    ['WindowCenter', 'WindowWidth', 'RescaleIntercept', 'RescaleSlope'],
+    tagSets.ct
+]);
+
+// No duplicates - combineTags deduplicates automatically
+const tags = file.extract(comprehensiveTags);
+```
+
 ## Best Practices
 
-1. **Choose the right strategy:**
-   - Use `ByScope` for proper DICOM hierarchy and when data will be stored hierarchically
-   - Use `Flat` for simple queries or when you need direct key-value access
-   - Use `StudyLevel` when you want to separate per-study metadata from per-instance data
+### 1. Use Predefined Tag Sets
 
-2. **Extract only what you need:**
-   - Don't extract all tags if you only need a few
-   - Use helper functions for predefined sets
+Prefer predefined tag sets over manual lists:
 
-3. **Handle missing tags gracefully:**
-   ```typescript
-   const data = JSON.parse(json);
-   const patientName = data.patient?.PatientName || 'Unknown';
-   ```
+```typescript
+// Good ✓
+const tags = file.extract(tagSets.default);
 
-4. **Consider storage implications:**
-   - `ByScope` in OnStudyCompleted avoids data duplication
-   - `Flat` duplicates study-level data across all instances
+// Avoid ✗
+const tags = file.extract([
+    'PatientName', 'PatientID', 'PatientBirthDate', // ... 40 more tags
+]);
+```
 
-5. **Use TypeScript autocomplete:**
-   - Leverage the 300+ tag name suggestions
-   - Less error-prone than manual hex codes
+### 2. Extract Only What You Need
 
-6. **Custom tags for vendor data:**
-   - Use `extractCustomTags` for private tags
-   - Give them meaningful names for easier access
+Don't extract all tags if you only need a few:
 
-## Tag Scope Reference
+```typescript
+// Minimal extraction
+const basicInfo = file.extract(['PatientName', 'StudyDate', 'Modality']);
 
-How tags are classified by the scope system:
+// Better performance and clearer intent
+```
 
-| Scope | DICOM Standard | Examples |
-|-------|---------------|----------|
-| **Patient** | Patient Module (0010,xxxx) | PatientName, PatientID, PatientBirthDate, PatientSex |
-| **Study** | Study Module | StudyDate, StudyTime, AccessionNumber, StudyDescription, ReferringPhysicianName |
-| **Series** | Series Module | Modality, SeriesNumber, SeriesDescription, SeriesDate, BodyPartExamined |
-| **Instance** | Image/Instance Module | InstanceNumber, ImagePosition, ImageOrientation, SliceLocation, WindowCenter |
-| **Equipment** | Equipment Module (0018,1xxx) | Manufacturer, ManufacturerModelName, SoftwareVersions, StationName |
+### 3. Handle Missing Tags
 
-The system handles all 6000+ tags in the DICOM standard by using group-based patterns, so even rare tags are correctly classified.
+Not all files contain all tags:
+
+```typescript
+const data = file.extract(tagSets.default);
+
+// Safe access
+if (data.PatientName) {
+    console.log('Patient:', data.PatientName);
+}
+
+// With defaults
+const patientName = data.PatientName || 'Unknown';
+const studyDescription = data.StudyDescription || 'No description';
+```
+
+### 4. Use TypeScript for Tag Safety
+
+TypeScript provides autocomplete and validation:
+
+```typescript
+// TypeScript knows about 300+ tags
+const tags = file.extract([
+    'PatientName',  // ✓ Autocomplete suggests this
+    'StudyDate',    // ✓ Validated
+    'InvalidTag'    // ✗ TypeScript warning (still allowed as string)
+]);
+```
+
+### 5. Reuse Tag Sets
+
+Create reusable tag configurations:
+
+```typescript
+// config.ts
+export const ANONYMIZATION_TAGS = combineTags([
+    tagSets.studyBasic,
+    tagSets.seriesBasic,
+    tagSets.instanceBasic,
+    // Exclude patient demographics
+]);
+
+export const ROUTING_TAGS = [
+    'StudyInstanceUID',
+    'SeriesInstanceUID',
+    'SOPInstanceUID',
+    'Modality',
+    'StationName'
+];
+
+export const QUALITY_CHECK_TAGS = combineTags([
+    tagSets.imagePixelInfo,
+    ['WindowCenter', 'WindowWidth', 'ImageType']
+]);
+
+// Use across your application
+const data = file.extract(QUALITY_CHECK_TAGS);
+```
+
+### 6. Modality-Aware Extraction
+
+Extract based on modality:
+
+```typescript
+// Detect modality first
+const basicData = file.extract(['Modality']);
+const modality = basicData.Modality;
+
+// Extract modality-specific tags
+let modalityTags = tagSets.default;
+
+switch (modality) {
+    case 'CT':
+        modalityTags = combineTags([tagSets.default, tagSets.ct]);
+        break;
+    case 'MR':
+        modalityTags = combineTags([tagSets.default, tagSets.mr]);
+        break;
+    case 'US':
+        modalityTags = combineTags([tagSets.default, tagSets.ultrasound]);
+        break;
+    case 'PT':
+        modalityTags = combineTags([tagSets.default, tagSets.petNm]);
+        break;
+}
+
+const fullData = file.extract(modalityTags);
+```
+
+### 7. Batch Processing
+
+Process multiple files efficiently:
+
+```typescript
+import { readdirSync } from 'fs';
+import { join } from 'path';
+
+const dicomDir = './dicom-files';
+const files = readdirSync(dicomDir).filter(f => f.endsWith('.dcm'));
+
+const file = new DicomFile();
+const results = [];
+
+for (const filename of files) {
+    try {
+        file.open(join(dicomDir, filename));
+        const data = file.extract(tagSets.default);
+        results.push({
+            file: filename,
+            data: data
+        });
+        file.close();
+    } catch (error) {
+        console.error(`Error processing ${filename}:`, error);
+    }
+}
+
+console.log(`Processed ${results.length} files`);
+```
+
+### 8. Validation and Error Handling
+
+Always validate extracted data:
+
+```typescript
+function validateStudyData(data: any): boolean {
+    const required = ['PatientID', 'StudyInstanceUID', 'Modality'];
+    return required.every(tag => data[tag] != null);
+}
+
+try {
+    const data = file.extract(tagSets.default);
+    
+    if (!validateStudyData(data)) {
+        console.error('Missing required tags');
+        return;
+    }
+    
+    // Process valid data
+    processStudy(data);
+    
+} catch (error) {
+    console.error('Extraction failed:', error);
+}
+```
+
+### 9. Performance Considerations
+
+- Extract tags once and reuse the data
+- Don't extract tags in tight loops
+- Close files after use to free resources
+
+```typescript
+// Good ✓
+const data = file.extract(tagSets.default);
+for (let i = 0; i < 1000; i++) {
+    processPatient(data.PatientName);
+}
+
+// Bad ✗
+for (let i = 0; i < 1000; i++) {
+    const data = file.extract(['PatientName']);
+    processPatient(data.PatientName);
+}
+```
+
+### 10. Logging and Debugging
+
+Log extracted tags for debugging:
+
+```typescript
+const data = file.extract(tagSets.default);
+
+// Structured logging
+console.log('Extracted tags:', {
+    patient: {
+        name: data.PatientName,
+        id: data.PatientID
+    },
+    study: {
+        uid: data.StudyInstanceUID,
+        date: data.StudyDate,
+        description: data.StudyDescription
+    },
+    modality: data.Modality
+});
+```
+
+## Summary
+
+Tag extraction in node-dicom-rs is:
+
+- **Simple**: Flat key-value structures for direct access
+- **Consistent**: Same API across DicomFile and StoreScp
+- **Type-safe**: Full TypeScript support with 300+ tag autocomplete
+- **Flexible**: Standard tags, custom tags, hex formats all supported
+- **Efficient**: Extract only what you need
+- **Comprehensive**: Predefined sets for all modalities and use cases
+
+Use predefined tag sets, handle missing values gracefully, and extract only the tags you need for optimal performance and maintainability.

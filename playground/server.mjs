@@ -5,13 +5,12 @@
  * This test verifies that:
  * - Event callbacks receive native JS objects (no JSON.parse needed)
  * - TypeScript autocomplete works for event data fields
- * - Different tag extraction modes (Scoped/Flat/StudyLevel) populate correct fields
+ * - Flat tags for OnFileStored, hierarchical with flat tags for OnStudyCompleted
  */
 
 import { StoreScp } from '../index.js';
 
-// Create SCP with ByScope grouping (default)
-// Note: Can use enum (GroupingStrategy.ByScope) or string ('ByScope') - both have autocomplete!
+// Create SCP with simplified tag extraction
 const scp = new StoreScp({
     port: 4446,
     storageBackend: 'S3',
@@ -23,7 +22,6 @@ const scp = new StoreScp({
     },
     verbose: false,
     extractTags: ['PatientName', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'Modality', 'InstanceNumber', 'SOPInstanceUID', 'ImageType', 'Rows', 'Columns'],
-    groupingStrategy: 'ByScope',
     studyTimeout: 40
 });
 
@@ -46,7 +44,7 @@ scp.onConnection((err, event) => {
   console.log('✓ New connection:', event.message);
 });
 
-// Test onFileStored with native object access
+// Test onFileStored with flat tags
 scp.onFileStored((err, event) => {
   if (err) {
     console.error('❌ File storage error:', err);
@@ -64,28 +62,19 @@ scp.onFileStored((err, event) => {
     console.log('  Study Instance UID:', data.studyInstanceUid);
     console.log('  Series Instance UID:', data.seriesInstanceUid);
     
-    // Check which tag format was populated based on grouping strategy
-    if (data.tagsScoped) {
-      console.log('  Tags (Scoped):');
-      console.log('    Patient:', data.tagsScoped.patient);
-      console.log('    Study:', data.tagsScoped.study);
-      console.log('    Series:', data.tagsScoped.series);
-      console.log('    Instance:', data.tagsScoped.instance);
-    }
-    
-    if (data.tagsFlat) {
-      console.log('  Tags (Flat):', data.tagsFlat);
-    }
-    
-    if (data.tagsStudyLevel) {
-      console.log('  Tags (Study Level):');
-      console.log('    Study Level:', data.tagsStudyLevel.studyLevel);
-      console.log('    Instance Level:', data.tagsStudyLevel.instanceLevel);
+    // Tags are always flat for simple, direct access
+    if (data.tags) {
+      console.log('  Tags (Flat):');
+      console.log('    Patient Name:', data.tags.PatientName);
+      console.log('    Patient ID:', data.tags.PatientID);
+      console.log('    Modality:', data.tags.Modality);
+      console.log('    Instance Number:', data.tags.InstanceNumber);
+      // All tags are at the root level
     }
   }
 });
 
-// Test onStudyCompleted with hierarchy data
+// Test onStudyCompleted with hierarchical structure
 scp.onStudyCompleted((err, event) => {
   if (err) {
     console.error('❌ Study completion error:', err);
@@ -100,18 +89,12 @@ scp.onStudyCompleted((err, event) => {
     console.log('  Study UID:', study.studyInstanceUid);
     console.log('  Series count:', study.series.length);
     
-    // Access tags at study level based on grouping strategy
-    if (study.tagsScoped) {
-      console.log('  Study Tags (Scoped):');
-      if (study.tagsScoped.patient) console.log('    Patient:', study.tagsScoped.patient);
-      if (study.tagsScoped.study) console.log('    Study:', study.tagsScoped.study);
-    }
-    if (study.tagsFlat) {
-      console.log('  Study Tags (Flat):', study.tagsFlat);
-    }
-    if (study.tagsStudyLevel?.studyLevel) {
-      console.log('  Study Tags (StudyLevel):', study.tagsStudyLevel.studyLevel);
-      console.log('    Note: Instance-level tags are at the instance level, not duplicated here');
+    // Access tags at study level (Patient + Study tags)
+    if (study.tags) {
+      console.log('  Study Tags:');
+      console.log('    Patient Name:', study.tags.PatientName);
+      console.log('    Patient ID:', study.tags.PatientID);
+      console.log('    Study Description:', study.tags.StudyDescription);
     }
     
     // Iterate series
@@ -119,13 +102,11 @@ scp.onStudyCompleted((err, event) => {
       console.log(`  Series ${series.seriesInstanceUid}:`);
       console.log(`    Instance count: ${series.instances.length}`);
       
-      // Access series-level tags based on grouping strategy
-      // Note: StudyLevel grouping doesn't have tags at series level
-      if (series.tagsScoped?.series) {
-        console.log('    Series tags (Scoped):', series.tagsScoped.series);
-      }
-      if (series.tagsFlat) {
-        console.log('    Series tags (Flat):', series.tagsFlat);
+      // Access series-level tags
+      if (series.tags) {
+        console.log('    Series tags:');
+        console.log('      Modality:', series.tags.Modality);
+        console.log('      Series Description:', series.tags.SeriesDescription);
       }
       
       // Access instance-level tags
@@ -133,14 +114,9 @@ scp.onStudyCompleted((err, event) => {
         console.log(`    Instance ${instance.sopInstanceUid}:`);
         console.log(`      File: ${instance.file}`);
         
-        if (instance.tagsScoped?.instance) {
-          console.log('      Instance tags (Scoped):', instance.tagsScoped.instance);
-        }
-        if (instance.tagsFlat) {
-          console.log('      Instance tags (Flat):', instance.tagsFlat);
-        }
-        if (instance.tagsStudyLevel?.instanceLevel) {
-          console.log('      Instance tags (StudyLevel):', instance.tagsStudyLevel.instanceLevel);
+        if (instance.tags) {
+          console.log('      Instance tags:');
+          console.log('        Instance Number:', instance.tags.InstanceNumber);
         }
       }
     }

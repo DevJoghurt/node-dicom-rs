@@ -2,12 +2,12 @@ import test from 'ava'
 
 import { DicomFile } from './../index'
 
-test('read dicom file', (t) => {
+test('read dicom file', async (t) => {
   const file = new DicomFile();
 
-  file.open('./__test__/fixtures/test.dcm');
+  await file.open('./__test__/fixtures/test.dcm');
 
-  const data = file.getElements();
+  const data = file.extract(['PatientName']);
 
-  t.is(data.patientName, 'CompressedSamples^CT1');
+  t.is(data.PatientName, 'CompressedSamples^CT1');
 })

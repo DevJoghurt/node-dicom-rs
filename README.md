@@ -9,7 +9,7 @@ High-performance Node.js bindings for DICOM (Digital Imaging and Communications 
 - **DicomFile**: Read, parse, and manipulate DICOM files with full metadata extraction
 - **Storage Backends**: Filesystem and S3-compatible object storage support
 - **TypeScript Support**: Full TypeScript definitions with autocomplete for 300+ DICOM tags
-- **Flexible Tag Extraction**: Extract DICOM metadata with multiple grouping strategies
+- **Event-driven API**: Consistent callback-based events with typed data structures
 
 ## Installation
 
@@ -29,17 +29,28 @@ const receiver = new StoreScp({
     callingAeTitle: 'MY-SCP',
     outDir: './dicom-storage',
     verbose: true,
-    extractTags: ['PatientName', 'StudyDate', 'Modality'],
-    groupingStrategy: 'ByScope'
+    extractTags: ['PatientName', 'StudyDate', 'Modality']
 });
 
-receiver.addEventListener('OnFileStored', (data) => {
+receiver.onFileStored((err, event) => {
+    if (err) return console.error('Error:', err);
+    const data = event.data;
+    if (!data) return;
+    
     console.log('File received:', data.file);
-    console.log('Patient data:', data.tags.patient);
+    if (data.tags) {
+        console.log('Patient:', data.tags.PatientName);
+        console.log('Study Date:', data.tags.StudyDate);
+        console.log('Modality:', data.tags.Modality);
+    }
 });
 
-receiver.addEventListener('OnStudyCompleted', (study) => {
-    console.log(`Study ${study.study_instance_uid} complete`);
+receiver.onStudyCompleted((err, event) => {
+    if (err) return console.error('Error:', err);
+    const study = event.data?.study;
+    if (!study) return;
+    
+    console.log(`Study ${study.studyInstanceUid} complete`);
     console.log(`${study.series.length} series, total instances: ${study.series.reduce((sum, s) => sum + s.instances.length, 0)}`);
 });
 
@@ -65,18 +76,20 @@ sender.addDirectory('./dicom-folder');
 // Send with progress tracking
 const result = await sender.send({
     onFileSent: (err, event) => {
-        console.log('✓ File sent:', event.sopInstanceUid);
+        console.log('✓ File sent:', event.data?.sopInstanceUid);
     },
     onFileError: (err, event) => {
-        console.error('✗ Error:', event.message, event.error);
+        console.error('✗ Error:', event.message, event.data?.error);
     },
     onTransferCompleted: (err, event) => {
-        console.log(`Transfer complete! ${event.successful}/${event.totalFiles} files in ${event.durationSeconds.toFixed(2)}s`);
+        const data = event.data;
+        if (data) {
+            console.log(`Transfer complete! ${data.successful}/${data.totalFiles} files in ${data.durationSeconds.toFixed(2)}s`);
+        }
     }
 });
 
 console.log('Result:', result);
-```
 ```
 
 ### Working with DICOM Files
@@ -85,21 +98,72 @@ console.log('Result:', result);
 import { DicomFile } from '@nuxthealth/node-dicom';
 
 const file = new DicomFile();
-file.open('./scan.dcm');
+await file.open('./scan.dcm');
 
-// Extract specific tags
-const tags = file.extract(['PatientName', 'StudyDate', 'Modality'], undefined, 'ByScope');
-const data = JSON.parse(tags);
-console.log('Patient:', data.patient?.PatientName);
-console.log('Study:', data.study?.StudyDate);
+// Extract specific tags (always returns flat structure)
+const data = file.extract(['PatientName', 'StudyDate', 'Modality']);
+console.log('Patient:', data.PatientName);
+console.log('Study Date:', data.StudyDate);
+console.log('Modality:', data.Modality);
+
+// Get DICOM as JSON (without saving to file)
+const json = file.toJson(true);
+const obj = JSON.parse(json);
 
 // Get pixel data info
 const pixelInfo = file.getPixelDataInfo();
 console.log(`Image: ${pixelInfo.width}x${pixelInfo.height}, ${pixelInfo.frames} frames`);
 
-// Save raw pixel data
+// Get pixel data as Buffer (without saving to file)
+const pixelBuffer = file.getPixelData();
+console.log(`Pixel data: ${pixelBuffer.length} bytes`);
+
+// For compressed data, decode it
+if (pixelInfo.isCompressed) {
+    const decodedBuffer = file.getDecodedPixelData();
+    processImage(decodedBuffer, pixelInfo);
+}
+
+// NEW! Get processed pixel data with windowing, frame extraction, 8-bit conversion
+const displayReady = file.getProcessedPixelData({
+    applyVoiLut: true,      // Use WindowCenter/Width from file
+    convertTo8bit: true      // Convert to 8-bit for display (0-255)
+});
+
+// Custom window settings for different tissue types
+const boneWindow = file.getProcessedPixelData({
+    windowCenter: 300,       // Bone window
+    windowWidth: 1500,
+    convertTo8bit: true
+});
+
+// Or save pixel data to file (synchronous)
 file.saveRawPixelData('./output.raw');
 
+file.close();
+```
+
+### Update DICOM Tags 🆕
+
+Modify tag values for anonymization or corrections:
+
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
+import crypto from 'crypto';
+
+const file = new DicomFile();
+await file.open('scan.dcm');
+
+// Update tags (changes in memory only)
+file.updateTags({
+    PatientName: 'ANONYMOUS',
+    PatientID: crypto.randomUUID(),
+    PatientBirthDate: '',
+    InstitutionName: 'ANONYMIZED'
+});
+
+// Save changes to new file
+await file.saveAsDicom('anonymized.dcm');
 file.close();
 ```
 
@@ -110,23 +174,37 @@ For detailed documentation, see:
 - **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends
 - **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
 - **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
-- **[Tag Extraction Guide](./docs/tag-extraction.md)** - Grouping strategies, custom tags, helper functions
+- **[Tag Extraction Guide](./docs/tag-extraction.md)** - Tag extraction patterns and examples
+- **[Helper Functions Guide](./docs/helpers.md)** - Utility functions for tags, SOP classes, and transfer syntaxes
 
 ## Key Features
 
-### Flexible Tag Extraction
+### Tag Extraction
 
-Extract DICOM metadata with multiple grouping strategies:
+Extract DICOM metadata with ease:
 
 ```typescript
-// Grouped by DICOM hierarchy (Patient, Study, Series, Instance)
-const scoped = file.extract(['PatientName', 'StudyDate', 'Modality'], undefined, 'ByScope');
+// DicomFile: Always returns flat structure
+const data = file.extract(['PatientName', 'StudyDate', 'Modality']);
+console.log('Patient:', data.PatientName);
 
-// Flat structure
-const flat = file.extract(['PatientName', 'StudyDate'], undefined, 'Flat');
+// StoreScp: Flat tags for OnFileStored
+receiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    console.log('Patient:', tags?.PatientName);
+});
 
-// Study-level grouping
-const studyLevel = file.extract(tags, undefined, 'StudyLevel');
+// StoreScp: Hierarchical with flat tags at each level for OnStudyCompleted
+receiver.onStudyCompleted((err, event) => {
+    const study = event.data?.study;
+    console.log('Study tags:', study?.tags); // Patient + Study level
+    study?.series.forEach(series => {
+        console.log('Series tags:', series.tags); // Series level
+        series.instances.forEach(instance => {
+            console.log('Instance tags:', instance.tags); // Instance + Equipment level
+        });
+    });
+});
 ```
 
 ### TypeScript Autocomplete
@@ -139,7 +217,7 @@ const data = file.extract([
     'StudyDate',
     'Modality',
     'SeriesDescription'
-], undefined, 'ByScope');
+]);
 ```
 
 ### Storage Backends

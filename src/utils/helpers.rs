@@ -555,8 +555,8 @@ pub fn combine_tags(tag_arrays: Vec<Vec<String>>) -> Vec<String> {
  * ```
  */
 #[napi]
-pub fn create_custom_tag(tag: String, name: String) -> crate::tag_extractor::CustomTag {
-    crate::tag_extractor::CustomTag { tag, name }
+pub fn create_custom_tag(tag: String, name: String) -> crate::utils::CustomTag {
+    crate::utils::CustomTag { tag, name }
 }
 
 /**

@@ -63,14 +63,14 @@ export declare class DicomFile {
    * ```typescript
    * // Filesystem
    * const file1 = new DicomFile();
-   * file1.open('/path/to/file.dcm');
+   * await file1.open('/path/to/file.dcm');
    *
    * // S3
    * const file2 = new DicomFile({ backend: 'S3', s3Config: {...} });
-   * file2.open('folder/file.dcm'); // Reads from S3 bucket
+   * await file2.open('folder/file.dcm'); // Reads from S3 bucket
    * ```
    */
-  open(path: string): string
+  open(path: string): Promise<string>
   /** * Open and load a DICOM JSON file into memory.
    *
    * Reads a DICOM file in JSON format (as specified by DICOM Part 18) and converts it
@@ -84,11 +84,11 @@ export declare class DicomFile {
    * @example
    * ```typescript
    * const file = new DicomFile();
-   * file.openJson('/path/to/file.json');
-   * const data = file.extract(['PatientName', 'StudyDate'], undefined, 'Flat');
+   * await file.openJson('/path/to/file.json');
+   * const data = file.extract(['PatientName', 'StudyDate']);
    * ```
    */
-  openJson(path: string): string
+  openJson(path: string): Promise<string>
   /** * Print a detailed dump of the DICOM file structure to stdout.
    *
    * Displays all DICOM elements with their tags, VRs, and values in a human-readable format.
@@ -118,18 +118,11 @@ export declare class DicomFile {
    * ```
    */
   saveRawPixelData(path: string): string
-  /** * Extract DICOM tags with flexible grouping strategies.
+  /** * Extract DICOM tags and return as flat key-value structure.
    *
-   * Extracts specified DICOM tags and returns them as a JSON string, organized according
-   * to the chosen grouping strategy. Supports any tag name from the DICOM standard or
-   * hex format (e.g., "00100010").
-   *
-   * ## Grouping Strategies
-   *
-   * - **"ByScope"** (default): Groups tags by DICOM hierarchy levels (Patient, Study, Series, Instance, Equipment)
-   * - **"Flat"**: Returns all tags in a flat key-value structure
-   * - **"StudyLevel"**: Groups into studyLevel (Patient+Study) and instanceLevel (Series+Instance+Equipment)
-   * - **"Custom"**: Reserved for user-defined grouping rules (currently behaves like ByScope)
+   * Extracts specified DICOM tags and returns them as a JSON string with a simple
+   * flat structure (all tags at root level). Supports any tag name from the DICOM
+   * standard or hex format (e.g., "00100010").
    *
    * ## Tag Name Formats
    *
@@ -146,36 +139,97 @@ export declare class DicomFile {
    *
    * file.extract(
    *   ['PatientName'],
-   *   [createCustomTag('00091001', 'VendorPrivateTag')],
-   *   'ByScope'
+   *   [createCustomTag('00091001', 'VendorPrivateTag')]
    * );
    * ```
    *
    * @param tagNames - Array of DICOM tag names or hex values to extract. Supports 300+ autocomplete suggestions.
    * @param customTags - Optional array of custom tag specifications for private/vendor tags
-   * @param strategy - Grouping strategy: "ByScope" | "Flat" | "StudyLevel" | "Custom" (default: "ByScope")
-   * @returns JSON string containing extracted tags, structure depends on grouping strategy
+   * @returns JSON string containing extracted tags as flat key-value pairs
    * @throws Error if no file is opened or JSON serialization fails
    *
    * @example
    * ```typescript
-   * // Scoped grouping (default)
-   * const json = file.extract(['PatientName', 'StudyDate', 'Modality'], undefined, 'ByScope');
+   * // Extract standard tags
+   * const json = file.extract(['PatientName', 'StudyDate', 'Modality']);
    * const data = JSON.parse(json);
-   * // { patient: { PatientName: "..." }, study: { StudyDate: "..." }, series: { Modality: "..." } }
-   *
-   * // Flat structure
-   * const flatJson = file.extract(['PatientName', 'StudyDate'], undefined, 'Flat');
-   * // { "PatientName": "...", "StudyDate": "..." }
+   * // { "PatientName": "DOE^JOHN", "StudyDate": "20240101", "Modality": "CT" }
    *
    * // Use predefined tag sets
    * import { getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
    * const tags = getCommonTagSets();
    * const allTags = combineTags([tags.patientBasic, tags.studyBasic, tags.ct]);
-   * const extracted = file.extract(allTags, undefined, 'StudyLevel');
+   * const extracted = file.extract(allTags);
    * ```
    */
-  extract(tagNames: Array<'AccessionNumber' | 'AcquisitionDate' | 'AcquisitionDateTime' | 'AcquisitionNumber' | 'AcquisitionTime' | 'ActualCardiacTriggerTimePriorToRPeak' | 'ActualFrameDuration' | 'AdditionalPatientHistory' | 'AdmissionID' | 'AdmittingDiagnosesDescription' | 'AnatomicalOrientationType' | 'AnatomicRegionSequence' | 'AnodeTargetMaterial' | 'BeamLimitingDeviceAngle' | 'BitsAllocated' | 'BitsStored' | 'BluePaletteColorLookupTableDescriptor' | 'BodyPartExamined' | 'BodyPartThickness' | 'BranchOfService' | 'BurnedInAnnotation' | 'ChannelSensitivity' | 'CineRate' | 'CollimatorType' | 'Columns' | 'CompressionForce' | 'ContentDate' | 'ContentTime' | 'ContrastBolusAgent' | 'ContrastBolusIngredient' | 'ContrastBolusIngredientConcentration' | 'ContrastBolusRoute' | 'ContrastBolusStartTime' | 'ContrastBolusStopTime' | 'ContrastBolusTotalDose' | 'ContrastBolusVolume' | 'ContrastFlowDuration' | 'ContrastFlowRate' | 'ConvolutionKernel' | 'CorrectedImage' | 'CountsSource' | 'DataCollectionDiameter' | 'DecayCorrection' | 'DeidentificationMethod' | 'DerivationDescription' | 'DetectorTemperature' | 'DeviceSerialNumber' | 'DistanceSourceToDetector' | 'DistanceSourceToPatient' | 'EchoTime' | 'EthnicGroup' | 'Exposure' | 'ExposureInMicroAmpereSeconds' | 'ExposureTime' | 'FilterType' | 'FlipAngle' | 'FocalSpots' | 'FrameDelay' | 'FrameIncrementPointer' | 'FrameOfReferenceUID' | 'FrameTime' | 'GantryAngle' | 'GeneratorPower' | 'GraphicAnnotationSequence' | 'GreenPaletteColorLookupTableDescriptor' | 'HeartRate' | 'HighBit' | 'ImageComments' | 'ImageLaterality' | 'ImageOrientationPatient' | 'ImagePositionPatient' | 'ImagerPixelSpacing' | 'ImageTriggerDelay' | 'ImageType' | 'ImagingFrequency' | 'ImplementationClassUID' | 'ImplementationVersionName' | 'InstanceCreationDate' | 'InstanceCreationTime' | 'InstanceNumber' | 'InstitutionName' | 'IntensifierSize' | 'IssuerOfAdmissionID' | 'KVP' | 'LargestImagePixelValue' | 'LargestPixelValueInSeries' | 'Laterality' | 'LossyImageCompression' | 'LossyImageCompressionMethod' | 'LossyImageCompressionRatio' | 'MagneticFieldStrength' | 'Manufacturer' | 'ManufacturerModelName' | 'MedicalRecordLocator' | 'MilitaryRank' | 'Modality' | 'MultiplexGroupTimeOffset' | 'NameOfPhysiciansReadingStudy' | 'NominalCardiacTriggerDelayTime' | 'NominalInterval' | 'NumberOfFrames' | 'NumberOfSlices' | 'NumberOfTemporalPositions' | 'NumberOfWaveformChannels' | 'NumberOfWaveformSamples' | 'Occupation' | 'OperatorsName' | 'OtherPatientIDs' | 'OtherPatientNames' | 'OverlayBitPosition' | 'OverlayBitsAllocated' | 'OverlayColumns' | 'OverlayData' | 'OverlayOrigin' | 'OverlayRows' | 'OverlayType' | 'PaddleDescription' | 'PatientAge' | 'PatientBirthDate' | 'PatientBreedDescription' | 'PatientComments' | 'PatientID' | 'PatientIdentityRemoved' | 'PatientName' | 'PatientPosition' | 'PatientSex' | 'PatientSize' | 'PatientSpeciesDescription' | 'PatientSupportAngle' | 'PatientTelephoneNumbers' | 'PatientWeight' | 'PerformedProcedureStepDescription' | 'PerformedProcedureStepID' | 'PerformedProcedureStepStartDate' | 'PerformedProcedureStepStartTime' | 'PerformedProtocolCodeSequence' | 'PerformingPhysicianName' | 'PhotometricInterpretation' | 'PhysiciansOfRecord' | 'PixelAspectRatio' | 'PixelPaddingRangeLimit' | 'PixelPaddingValue' | 'PixelRepresentation' | 'PixelSpacing' | 'PlanarConfiguration' | 'PositionerPrimaryAngle' | 'PositionerSecondaryAngle' | 'PositionReferenceIndicator' | 'PreferredPlaybackSequencing' | 'PresentationIntentType' | 'PresentationLUTShape' | 'PrimaryAnatomicStructureSequence' | 'PrivateInformationCreatorUID' | 'ProtocolName' | 'QualityControlImage' | 'RadiationMachineName' | 'RadiationSetting' | 'RadionuclideTotalDose' | 'RadiopharmaceuticalInformationSequence' | 'RadiopharmaceuticalStartDateTime' | 'RadiopharmaceuticalStartTime' | 'RadiopharmaceuticalVolume' | 'ReasonForTheRequestedProcedure' | 'ReceivingApplicationEntityTitle' | 'RecognizableVisualFeatures' | 'RecommendedDisplayFrameRate' | 'ReconstructionDiameter' | 'ReconstructionTargetCenterPatient' | 'RedPaletteColorLookupTableDescriptor' | 'ReferencedBeamNumber' | 'ReferencedImageSequence' | 'ReferencedPatientPhotoSequence' | 'ReferencedPerformedProcedureStepSequence' | 'ReferencedRTPlanSequence' | 'ReferencedSOPClassUID' | 'ReferencedSOPInstanceUID' | 'ReferencedStudySequence' | 'ReferringPhysicianName' | 'RepetitionTime' | 'RequestAttributesSequence' | 'RequestedContrastAgent' | 'RequestedProcedureDescription' | 'RequestedProcedureID' | 'RequestingPhysician' | 'RescaleIntercept' | 'RescaleSlope' | 'RescaleType' | 'ResponsibleOrganization' | 'ResponsiblePerson' | 'ResponsiblePersonRole' | 'Rows' | 'RTImageDescription' | 'RTImageLabel' | 'SamplesPerPixel' | 'SamplingFrequency' | 'ScanningSequence' | 'SendingApplicationEntityTitle' | 'SeriesDate' | 'SeriesDescription' | 'SeriesInstanceUID' | 'SeriesNumber' | 'SeriesTime' | 'SeriesType' | 'SliceLocation' | 'SliceThickness' | 'SmallestImagePixelValue' | 'SmallestPixelValueInSeries' | 'SoftwareVersions' | 'SOPClassUID' | 'SOPInstanceUID' | 'SoundPathLength' | 'SourceApplicationEntityTitle' | 'SourceImageSequence' | 'SpacingBetweenSlices' | 'SpecificCharacterSet' | 'StationName' | 'StudyComments' | 'StudyDate' | 'StudyDescription' | 'StudyID' | 'StudyInstanceUID' | 'StudyTime' | 'TableHeight' | 'TableTopLateralPosition' | 'TableTopLongitudinalPosition' | 'TableTopVerticalPosition' | 'TableType' | 'TemporalPositionIdentifier' | 'TemporalResolution' | 'TextObjectSequence' | 'TimezoneOffsetFromUTC' | 'TransducerFrequency' | 'TransducerType' | 'TransferSyntaxUID' | 'TriggerTime' | 'TriggerTimeOffset' | 'UltrasoundColorDataPresent' | 'Units' | 'VOILUTFunction' | 'WaveformOriginality' | 'WaveformSequence' | 'WindowCenter' | 'WindowCenterWidthExplanation' | 'WindowWidth' | 'XRayTubeCurrent' | (string & {})>, customTags?: Array<CustomTag>, strategy?: 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom'): string
+  extract(tagNames: Array<'AccessionNumber' | 'AcquisitionDate' | 'AcquisitionDateTime' | 'AcquisitionNumber' | 'AcquisitionTime' | 'ActualCardiacTriggerTimePriorToRPeak' | 'ActualFrameDuration' | 'AdditionalPatientHistory' | 'AdmissionID' | 'AdmittingDiagnosesDescription' | 'AnatomicalOrientationType' | 'AnatomicRegionSequence' | 'AnodeTargetMaterial' | 'BeamLimitingDeviceAngle' | 'BitsAllocated' | 'BitsStored' | 'BluePaletteColorLookupTableDescriptor' | 'BodyPartExamined' | 'BodyPartThickness' | 'BranchOfService' | 'BurnedInAnnotation' | 'ChannelSensitivity' | 'CineRate' | 'CollimatorType' | 'Columns' | 'CompressionForce' | 'ContentDate' | 'ContentTime' | 'ContrastBolusAgent' | 'ContrastBolusIngredient' | 'ContrastBolusIngredientConcentration' | 'ContrastBolusRoute' | 'ContrastBolusStartTime' | 'ContrastBolusStopTime' | 'ContrastBolusTotalDose' | 'ContrastBolusVolume' | 'ContrastFlowDuration' | 'ContrastFlowRate' | 'ConvolutionKernel' | 'CorrectedImage' | 'CountsSource' | 'DataCollectionDiameter' | 'DecayCorrection' | 'DeidentificationMethod' | 'DerivationDescription' | 'DetectorTemperature' | 'DeviceSerialNumber' | 'DistanceSourceToDetector' | 'DistanceSourceToPatient' | 'EchoTime' | 'EthnicGroup' | 'Exposure' | 'ExposureInMicroAmpereSeconds' | 'ExposureTime' | 'FilterType' | 'FlipAngle' | 'FocalSpots' | 'FrameDelay' | 'FrameIncrementPointer' | 'FrameOfReferenceUID' | 'FrameTime' | 'GantryAngle' | 'GeneratorPower' | 'GraphicAnnotationSequence' | 'GreenPaletteColorLookupTableDescriptor' | 'HeartRate' | 'HighBit' | 'ImageComments' | 'ImageLaterality' | 'ImageOrientationPatient' | 'ImagePositionPatient' | 'ImagerPixelSpacing' | 'ImageTriggerDelay' | 'ImageType' | 'ImagingFrequency' | 'ImplementationClassUID' | 'ImplementationVersionName' | 'InstanceCreationDate' | 'InstanceCreationTime' | 'InstanceNumber' | 'InstitutionName' | 'IntensifierSize' | 'IssuerOfAdmissionID' | 'KVP' | 'LargestImagePixelValue' | 'LargestPixelValueInSeries' | 'Laterality' | 'LossyImageCompression' | 'LossyImageCompressionMethod' | 'LossyImageCompressionRatio' | 'MagneticFieldStrength' | 'Manufacturer' | 'ManufacturerModelName' | 'MedicalRecordLocator' | 'MilitaryRank' | 'Modality' | 'MultiplexGroupTimeOffset' | 'NameOfPhysiciansReadingStudy' | 'NominalCardiacTriggerDelayTime' | 'NominalInterval' | 'NumberOfFrames' | 'NumberOfSlices' | 'NumberOfTemporalPositions' | 'NumberOfWaveformChannels' | 'NumberOfWaveformSamples' | 'Occupation' | 'OperatorsName' | 'OtherPatientIDs' | 'OtherPatientNames' | 'OverlayBitPosition' | 'OverlayBitsAllocated' | 'OverlayColumns' | 'OverlayData' | 'OverlayOrigin' | 'OverlayRows' | 'OverlayType' | 'PaddleDescription' | 'PatientAge' | 'PatientBirthDate' | 'PatientBreedDescription' | 'PatientComments' | 'PatientID' | 'PatientIdentityRemoved' | 'PatientName' | 'PatientPosition' | 'PatientSex' | 'PatientSize' | 'PatientSpeciesDescription' | 'PatientSupportAngle' | 'PatientTelephoneNumbers' | 'PatientWeight' | 'PerformedProcedureStepDescription' | 'PerformedProcedureStepID' | 'PerformedProcedureStepStartDate' | 'PerformedProcedureStepStartTime' | 'PerformedProtocolCodeSequence' | 'PerformingPhysicianName' | 'PhotometricInterpretation' | 'PhysiciansOfRecord' | 'PixelAspectRatio' | 'PixelPaddingRangeLimit' | 'PixelPaddingValue' | 'PixelRepresentation' | 'PixelSpacing' | 'PlanarConfiguration' | 'PositionerPrimaryAngle' | 'PositionerSecondaryAngle' | 'PositionReferenceIndicator' | 'PreferredPlaybackSequencing' | 'PresentationIntentType' | 'PresentationLUTShape' | 'PrimaryAnatomicStructureSequence' | 'PrivateInformationCreatorUID' | 'ProtocolName' | 'QualityControlImage' | 'RadiationMachineName' | 'RadiationSetting' | 'RadionuclideTotalDose' | 'RadiopharmaceuticalInformationSequence' | 'RadiopharmaceuticalStartDateTime' | 'RadiopharmaceuticalStartTime' | 'RadiopharmaceuticalVolume' | 'ReasonForTheRequestedProcedure' | 'ReceivingApplicationEntityTitle' | 'RecognizableVisualFeatures' | 'RecommendedDisplayFrameRate' | 'ReconstructionDiameter' | 'ReconstructionTargetCenterPatient' | 'RedPaletteColorLookupTableDescriptor' | 'ReferencedBeamNumber' | 'ReferencedImageSequence' | 'ReferencedPatientPhotoSequence' | 'ReferencedPerformedProcedureStepSequence' | 'ReferencedRTPlanSequence' | 'ReferencedSOPClassUID' | 'ReferencedSOPInstanceUID' | 'ReferencedStudySequence' | 'ReferringPhysicianName' | 'RepetitionTime' | 'RequestAttributesSequence' | 'RequestedContrastAgent' | 'RequestedProcedureDescription' | 'RequestedProcedureID' | 'RequestingPhysician' | 'RescaleIntercept' | 'RescaleSlope' | 'RescaleType' | 'ResponsibleOrganization' | 'ResponsiblePerson' | 'ResponsiblePersonRole' | 'Rows' | 'RTImageDescription' | 'RTImageLabel' | 'SamplesPerPixel' | 'SamplingFrequency' | 'ScanningSequence' | 'SendingApplicationEntityTitle' | 'SeriesDate' | 'SeriesDescription' | 'SeriesInstanceUID' | 'SeriesNumber' | 'SeriesTime' | 'SeriesType' | 'SliceLocation' | 'SliceThickness' | 'SmallestImagePixelValue' | 'SmallestPixelValueInSeries' | 'SoftwareVersions' | 'SOPClassUID' | 'SOPInstanceUID' | 'SoundPathLength' | 'SourceApplicationEntityTitle' | 'SourceImageSequence' | 'SpacingBetweenSlices' | 'SpecificCharacterSet' | 'StationName' | 'StudyComments' | 'StudyDate' | 'StudyDescription' | 'StudyID' | 'StudyInstanceUID' | 'StudyTime' | 'TableHeight' | 'TableTopLateralPosition' | 'TableTopLongitudinalPosition' | 'TableTopVerticalPosition' | 'TableType' | 'TemporalPositionIdentifier' | 'TemporalResolution' | 'TextObjectSequence' | 'TimezoneOffsetFromUTC' | 'TransducerFrequency' | 'TransducerType' | 'TransferSyntaxUID' | 'TriggerTime' | 'TriggerTimeOffset' | 'UltrasoundColorDataPresent' | 'Units' | 'VOILUTFunction' | 'WaveformOriginality' | 'WaveformSequence' | 'WindowCenter' | 'WindowCenterWidthExplanation' | 'WindowWidth' | 'XRayTubeCurrent' | (string & {})>, customTags?: Array<CustomTag>): Record<string, string>
+  /** * Update DICOM tag values in the currently opened file.
+   *
+   * Modifies one or more DICOM tag values in memory. Changes are not persisted to disk
+   * until you call `saveAsDicom()`. Useful for anonymization, correcting metadata,
+   * or updating values before saving. Supports standard tag names and hex format.
+   *
+   * **Important Notes:**
+   * - Changes are made in-memory only
+   * - Call `saveAsDicom()` to persist changes
+   * - Cannot modify meta information tags (file preamble)
+   * - Cannot modify pixel data with this method
+   * - For new tags, appropriate VR (Value Representation) is auto-detected
+   *
+   * @param updates - Object with tag names as keys and new values as strings
+   * @returns Success message with number of tags updated
+   * @throws Error if no file is opened or tag update fails
+   *
+   * @example
+   * ```typescript
+   * const file = new DicomFile();
+   * await file.open('original.dcm');
+   *
+   * // Update multiple tags
+   * file.updateTags({
+   *     PatientName: 'ANONYMOUS',
+   *     PatientID: 'ANON001',
+   *     StudyDescription: 'Anonymized Study',
+   *     SeriesDescription: 'Anonymized Series'
+   * });
+   *
+   * // Save changes
+   * await file.saveAsDicom('anonymized.dcm');
+   * file.close();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Anonymization workflow
+   * const file = new DicomFile();
+   * await file.open('patient-scan.dcm');
+   *
+   * file.updateTags({
+   *     PatientName: 'ANONYMOUS',
+   *     PatientID: crypto.randomUUID(),
+   *     PatientBirthDate: '',
+   *     PatientSex: '',
+   *     PatientAge: '',
+   *     InstitutionName: 'ANONYMIZED',
+   *     ReferringPhysicianName: '',
+   *     PerformingPhysicianName: ''
+   * });
+   *
+   * await file.saveAsDicom('anonymized-scan.dcm');
+   * file.close();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Update using hex tag format
+   * file.updateTags({
+   *     '00100010': 'DOE^JANE',        // PatientName
+   *     '00100020': 'PAT12345',         // PatientID
+   *     '00080020': '20240101'          // StudyDate
+   * });
+   * ```
+   */
+  updateTags(updates: Record<string, string>): string
   /** * Get comprehensive information about pixel data in the DICOM file.
    *
    * Extracts metadata about the image dimensions, bit depth, photometric interpretation,
@@ -210,13 +264,13 @@ export declare class DicomFile {
    * @example
    * ```typescript
    * // Extract raw pixel data
-   * file.processPixelData({
+   * await file.processPixelData({
    *   outputPath: 'output.raw',
    *   format: 'Raw'
    * });
    *
    * // Decode and save as PNG with windowing
-   * file.processPixelData({
+   * await file.processPixelData({
    *   outputPath: 'output.png',
    *   format: 'Png',
    *   decode: true,
@@ -225,20 +279,20 @@ export declare class DicomFile {
    * });
    *
    * // Extract specific frame
-   * file.processPixelData({
+   * await file.processPixelData({
    *   outputPath: 'frame_5.raw',
    *   format: 'Raw',
    *   frameNumber: 5
    * });
    *
    * // Get metadata as JSON
-   * file.processPixelData({
+   * await file.processPixelData({
    *   outputPath: 'info.json',
    *   format: 'Json'
    * });
    * ```
    */
-  processPixelData(options: PixelDataOptions): string
+  processPixelData(options: PixelDataOptions): Promise<string>
   /** * Save the currently opened DICOM file as JSON format.
    *
    * Converts the DICOM object to JSON representation according to DICOM Part 18
@@ -252,11 +306,11 @@ export declare class DicomFile {
    * @example
    * ```typescript
    * const file = new DicomFile();
-   * file.open('image.dcm');
-   * file.saveAsJson('output.json', true);
+   * await file.open('image.dcm');
+   * await file.saveAsJson('output.json', true);
    * ```
    */
-  saveAsJson(path: string, pretty?: boolean | undefined | null): string
+  saveAsJson(path: string, pretty?: boolean | undefined | null): Promise<string>
   /** * Save the currently opened DICOM file (regardless of original format) as standard DICOM.
    *
    * Writes the DICOM object as a standard .dcm file with proper file meta information.
@@ -269,11 +323,141 @@ export declare class DicomFile {
    * @example
    * ```typescript
    * const file = new DicomFile();
-   * file.openJson('input.json');
-   * file.saveAsDicom('output.dcm');
+   * await file.openJson('input.json');
+   * await file.saveAsDicom('output.dcm');
    * ```
    */
-  saveAsDicom(path: string): string
+  saveAsDicom(path: string): Promise<string>
+  /** * Get the DICOM file as a JSON string.
+   *
+   * Converts the entire DICOM dataset to JSON format (DICOM Part 18 JSON Model).
+   * Returns the JSON string directly without writing to a file. Use `saveAsJson()`
+   * if you want to save to a file instead.
+   *
+   * @param pretty - Whether to format the JSON with indentation (default: true)
+   * @returns JSON string representing the DICOM file
+   * @throws Error if no file is opened or serialization fails
+   *
+   * @example
+   * ```typescript
+   * const file = new DicomFile();
+   * await file.open('scan.dcm');
+   *
+   * // Get pretty-printed JSON
+   * const json = file.toJson(true);
+   * const obj = JSON.parse(json);
+   * console.log(obj);
+   *
+   * // Get compact JSON
+   * const compactJson = file.toJson(false);
+   *
+   * file.close();
+   * ```
+   */
+  toJson(pretty?: boolean | undefined | null): string
+  /** * Get raw pixel data as a Buffer.
+   *
+   * Extracts the raw pixel data bytes from the DICOM file's PixelData element (7FE0,0010).
+   * Returns the data as-is without any decoding or decompression. For compressed transfer
+   * syntaxes, the data will be in its compressed form.
+   *
+   * To save to a file instead, use `saveRawPixelData()`.
+   *
+   * @returns Buffer containing the raw pixel data bytes
+   * @throws Error if no file is opened or pixel data not found
+   *
+   * @example
+   * ```typescript
+   * const file = new DicomFile();
+   * await file.open('image.dcm');
+   *
+   * const pixelBuffer = file.getPixelData();
+   * console.log(`Pixel data size: ${pixelBuffer.length} bytes`);
+   *
+   * // Process the buffer
+   * processPixelData(pixelBuffer);
+   *
+   * file.close();
+   * ```
+   */
+  getPixelData(): Buffer
+  /** * Decode and get pixel data as a Buffer.
+   *
+   * Decodes compressed or encapsulated pixel data and returns it as raw uncompressed bytes.
+   * Requires the 'transcode' feature to be enabled at build time. For uncompressed data,
+   * use `getPixelData()` instead for better performance.
+   *
+   * @returns Buffer containing decoded pixel data
+   * @throws Error if no file is opened, transcode feature not enabled, or decoding fails
+   *
+   * @example
+   * ```typescript
+   * const file = new DicomFile();
+   * await file.open('compressed-image.dcm');
+   *
+   * const info = file.getPixelDataInfo();
+   * if (info.isCompressed) {
+   *     // Decode compressed data
+   *     const decodedBuffer = file.getDecodedPixelData();
+   *     console.log(`Decoded size: ${decodedBuffer.length} bytes`);
+   * }
+   *
+   * file.close();
+   * ```
+   */
+  getDecodedPixelData(): Buffer
+  /** * Get decoded and processed pixel data as a Buffer with advanced options.
+   *
+   * This method combines decoding with optional processing steps like frame extraction,
+   * windowing (VOI LUT), and 8-bit conversion. Returns processed pixel data in-memory
+   * without file I/O. Requires the 'transcode' feature to be enabled at build time.
+   *
+   * **Processing Pipeline:**
+   * 1. Decode/decompress pixel data
+   * 2. Extract specific frame (if frameNumber specified)
+   * 3. Apply windowing/VOI LUT (if requested)
+   * 4. Convert to 8-bit (if requested)
+   *
+   * @param options - Processing options (all optional)
+   * @returns Buffer containing processed pixel data
+   * @throws Error if no file is opened, transcode feature not enabled, or processing fails
+   *
+   * @example
+   * ```typescript
+   * const file = new DicomFile();
+   * await file.open('ct-scan.dcm');
+   *
+   * // Get decoded data with default windowing from file
+   * const windowed = file.getProcessedPixelData({
+   *     applyVoiLut: true,
+   *     convertTo8bit: true
+   * });
+   *
+   * // Custom window for bone visualization (CT)
+   * const boneWindow = file.getProcessedPixelData({
+   *     windowCenter: 300,
+   *     windowWidth: 1500,
+   *     convertTo8bit: true
+   * });
+   *
+   * // Extract specific frame from multi-frame image
+   * const frame5 = file.getProcessedPixelData({
+   *     frameNumber: 5
+   * });
+   *
+   * // Complete processing pipeline
+   * const processed = file.getProcessedPixelData({
+   *     frameNumber: 0,
+   *     applyVoiLut: true,
+   *     windowCenter: 40,    // Soft tissue window
+   *     windowWidth: 400,
+   *     convertTo8bit: true
+   * });
+   *
+   * file.close();
+   * ```
+   */
+  getProcessedPixelData(options?: PixelDataProcessingOptions | undefined | null): Buffer
   /** * Close the currently opened DICOM file and free memory.
    *
    * Releases the DICOM dataset from memory. After closing, you must call `open()`
@@ -958,103 +1142,11 @@ export interface CommonTagSets {
 export declare function createCustomTag(tag: string, name: string): CustomTag
 
 /** * Custom tag specification for extracting non-standard or private DICOM tags.
- *
- * Allows extraction of tags that aren't in the standard dictionary by specifying
- * the tag number directly. The extracted value will appear in the output using
- * your custom name instead of the raw tag number.
- *
- * ## Tag Format
- * Tags can be specified in multiple formats:
- * - Hex with parentheses: `(0010,0010)`
- * - Hex without parentheses: `00100010`
- * - Standard tag name: `PatientName` (if in dictionary)
- *
- * ## Output Location
- * Custom tags are grouped in a separate `custom` section in the output,
- * regardless of the grouping strategy used.
- *
- * @example
- * ```typescript
- * import { DicomFile, CustomTag } from '@nuxthealth/node-dicom';
- *
- * const dicom = new DicomFile();
- * dicom.open('scan-with-private-tags.dcm');
- *
- * // Define custom tags
- * const customTags: CustomTag[] = [
- *   { tag: '(0009,1001)', name: 'VendorID' },
- *   { tag: '(0019,100A)', name: 'ScannerMode' },
- *   { tag: '00091010', name: 'PrivateField' } // Without parentheses
- * ];
- *
- * // Extract with custom tags
- * const data = dicom.extract(
- *   ['PatientName', 'StudyDate'],
- *   customTags,
- *   'ByScope'
- * );
- *
- * console.log(JSON.parse(data));
- * // {
- * //   patient: { PatientName: 'DOE^JOHN' },
- * //   study: { StudyDate: '20240101' },
- * //   custom: {
- * //     VendorID: 'GE_MED',
- * //     ScannerMode: 'HELICAL',
- * //     PrivateField: 'value'
- * //   }
- * // }
- * ```
- *
- * @example
- * ```typescript
- * // Vendor-specific private tags
- *
- * // GE Medical Systems
- * const geTags: CustomTag[] = [
- *   { tag: '(0009,1001)', name: 'GE_PrivateCreator' },
- *   { tag: '(0043,1010)', name: 'GE_ImageType' }
- * ];
- *
- * // Siemens
- * const siemensTags: CustomTag[] = [
- *   { tag: '(0019,1008)', name: 'Siemens_CSAImageHeader' },
- *   { tag: '(0029,1010)', name: 'Siemens_CSASeriesHeader' }
- * ];
- *
- * // Philips
- * const philipsTags: CustomTag[] = [
- *   { tag: '(2001,1001)', name: 'Philips_ImageType' },
- *   { tag: '(2005,1080)', name: 'Philips_ReconstructionNumber' }
- * ];
- * ```
- *
- * @example
- * ```typescript
- * // Extract both standard and custom tags
- * import { getCommonTagSets } from '@nuxthealth/node-dicom';
- *
- * const tagSets = getCommonTagSets();
- * const dicom = new DicomFile();
- * dicom.open('scan.dcm');
- *
- * const customTags: CustomTag[] = [
- *   { tag: '(0009,1001)', name: 'PrivateTag1' },
- *   { tag: '(0019,100A)', name: 'PrivateTag2' }
- * ];
- *
- * // Combine standard and custom extraction
- * const data = dicom.extract(
- *   tagSets.default, // All standard tags
- *   customTags,      // Plus custom private tags
- *   'ByScope'
- * );
- * ```
  */
 export interface CustomTag {
   /** The tag in hex format (e.g., "(0010,0010)" or "00100010") or tag name */
   tag: string
-  /** User-defined name for this tag in the output (appears in 'custom' section) */
+  /** User-defined name for this tag in the output */
   name: string
 }
 
@@ -1065,17 +1157,27 @@ export interface DicomFileMeta {
   sopInstanceUid: string
 }
 
+export interface FileErrorData {
+  file: string
+  error: string
+  sopInstanceUid?: string
+  sopClassUid?: string
+  fileTransferSyntax?: string
+}
+
 /** * Event data for OnFileError event.
  *
  * Emitted when an error occurs while sending a file.
  */
 export interface FileErrorEvent {
   message: string
+  data?: FileErrorData
+}
+
+export interface FileSendingData {
   file: string
-  error: string
-  sopInstanceUid?: string
-  sopClassUid?: string
-  fileTransferSyntax?: string
+  sopInstanceUid: string
+  sopClassUid: string
 }
 
 /** * Event data for OnFileSending event.
@@ -1084,9 +1186,15 @@ export interface FileErrorEvent {
  */
 export interface FileSendingEvent {
   message: string
+  data?: FileSendingData
+}
+
+export interface FileSentData {
   file: string
   sopInstanceUid: string
   sopClassUid: string
+  transferSyntax: string
+  durationSeconds: number
 }
 
 /** * Event data for OnFileSent event.
@@ -1095,11 +1203,7 @@ export interface FileSendingEvent {
  */
 export interface FileSentEvent {
   message: string
-  file: string
-  sopInstanceUid: string
-  sopClassUid: string
-  transferSyntax: string
-  durationSeconds: number
+  data?: FileSentData
 }
 
 /** * Get a comprehensive list of 300+ commonly used DICOM tag names.
@@ -1343,136 +1447,14 @@ export declare function getCommonTagSets(): CommonTagSets
  */
 export declare function getCommonTransferSyntaxes(): TransferSyntaxConfig
 
-/** * Grouping strategy for organizing extracted DICOM tag data.
- *
- * Determines how extracted tags are structured in the output JSON.
- * Different strategies are useful for different workflows and data processing needs.
- *
- * ## Strategy Types
- *
- * ### ByScope
- * Groups tags by DICOM hierarchy level:
- * - `patient`: Patient demographics (PatientName, PatientID, etc.)
- * - `study`: Study-level metadata (StudyInstanceUID, StudyDate, etc.)
- * - `series`: Series-level metadata (SeriesInstanceUID, Modality, etc.)
- * - `instance`: Instance-level data (SOPInstanceUID, InstanceNumber, etc.)
- * - `equipment`: Device information (Manufacturer, StationName, etc.)
- * - `custom`: User-defined custom tags
- *
- * Best for: DICOM-aware applications, PACS systems, hierarchical data processing
- *
- * ### Flat
- * All tags at the root level without grouping.
- *
- * Best for: Simple key-value access, database insertion, quick lookups
- *
- * ### StudyLevel
- * Groups tags into two levels:
- * - `studyLevel`: Patient + Study tags (persists across all instances)
- * - `instanceLevel`: Series + Instance + Equipment tags (varies per file)
- *
- * Best for: Study-based processing, deduplication, study aggregation
- *
- * ### Custom
- * User-defined grouping rules (currently defaults to ByScope).
- *
- * Best for: Future extensibility with custom grouping logic
- *
- * @example
- * ```typescript
- * import { DicomFile } from '@nuxthealth/node-dicom';
- *
- * const dicom = new DicomFile();
- * dicom.open('scan.dcm');
- *
- * // ByScope strategy (hierarchical)
- * const scoped = dicom.extract(
- *   ['PatientName', 'StudyDate', 'Modality', 'SOPInstanceUID'],
- *   undefined,
- *   'ByScope'
- * );
- * console.log(JSON.parse(scoped));
- * // {
- * //   patient: { PatientName: 'DOE^JOHN' },
- * //   study: { StudyDate: '20240101' },
- * //   series: { Modality: 'CT' },
- * //   instance: { SOPInstanceUID: '1.2.3.4...' }
- * // }
- *
- * // Flat strategy (simple)
- * const flat = dicom.extract(
- *   ['PatientName', 'StudyDate', 'Modality'],
- *   undefined,
- *   'Flat'
- * );
- * console.log(JSON.parse(flat));
- * // {
- * //   PatientName: 'DOE^JOHN',
- * //   StudyDate: '20240101',
- * //   Modality: 'CT'
- * // }
- *
- * // StudyLevel strategy (two-tier)
- * const studyLevel = dicom.extract(
- *   ['PatientName', 'StudyDate', 'SeriesNumber', 'InstanceNumber'],
- *   undefined,
- *   'StudyLevel'
- * );
- * console.log(JSON.parse(studyLevel));
- * // {
- * //   studyLevel: { PatientName: 'DOE^JOHN', StudyDate: '20240101' },
- * //   instanceLevel: { SeriesNumber: '1', InstanceNumber: '1' }
- * // }
- * ```
- *
- * @example
- * ```typescript
- * // Practical use cases
- *
- * // PACS integration (ByScope)
- * const pacsData = dicom.extract(
- *   ['PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID'],
- *   undefined,
- *   'ByScope'
- * );
- *
- * // Database insertion (Flat)
- * const dbData = dicom.extract(
- *   ['PatientID', 'StudyDate', 'Modality', 'FilePath'],
- *   undefined,
- *   'Flat'
- * );
- * // Can directly map to database columns
- *
- * // Study deduplication (StudyLevel)
- * const dedupeData = dicom.extract(
- *   ['PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID'],
- *   undefined,
- *   'StudyLevel'
- * );
- * // studyLevel contains study key, instanceLevel contains file-specific data
- * ```
- */
-export declare const enum GroupingStrategy {
-  /** Group by DICOM hierarchy scope (Patient, Study, Series, Instance, Equipment) */
-  ByScope = 'ByScope',
-  /** Flat structure with all tags at root level */
-  Flat = 'Flat',
-  /** Group into studyLevel (Patient+Study) and instanceLevel (Series+Instance+Equipment) */
-  StudyLevel = 'StudyLevel',
-  /** Custom grouping rules (user provides mapping) */
-  Custom = 'Custom'
-}
-
 /** Instance (file) data within a series */
 export interface InstanceHierarchyData {
   sopInstanceUid: string
   sopClassUid: string
   transferSyntaxUid: string
   file: string
-  tagsScoped?: ScopedDicomData
-  tagsFlat?: Record<string, string>
-  tagsStudyLevel?: StudyLevelData
+  /** Instance + Equipment level tags only */
+  tags?: Record<string, string>
 }
 
 /** Output format for pixel data */
@@ -1545,6 +1527,20 @@ export interface PixelDataOptions {
   extractAllFrames?: boolean
 }
 
+/** Options for processing pixel data in-memory (return as Buffer) */
+export interface PixelDataProcessingOptions {
+  /** Specific frame number to extract (0-based, for multi-frame images) */
+  frameNumber?: number
+  /** Apply VOI LUT (Value of Interest Lookup Table) for windowing */
+  applyVoiLut?: boolean
+  /** Window center for manual windowing (overrides VOI LUT from file) */
+  windowCenter?: number
+  /** Window width for manual windowing (overrides VOI LUT from file) */
+  windowWidth?: number
+  /** Convert to 8-bit grayscale (applies windowing then scales to 0-255) */
+  convertTo8Bit?: boolean
+}
+
 /** * Result of a DICOM transfer operation.
  *
  * Returned by the `send()` method to indicate the outcome of the transfer.
@@ -1591,115 +1587,6 @@ export interface S3Config {
   endpoint?: string
 }
 
-/** * Standalone utility to extract raw pixel data from a DICOM file.
- *
- * This is a convenience function that opens a DICOM file, extracts the raw pixel data,
- * and saves it to a file in a single operation. For repeated operations on the same file,
- * prefer using the DicomFile class with `open()` and `saveRawPixelData()`.
- *
- * @param filePath - Path to the source DICOM file
- * @param outPath - Path where the raw pixel data will be saved
- * @returns Success message with the number of bytes written
- * @throws Error if the file cannot be opened, pixel data is missing, or write fails
- *
- * @example
- * ```typescript
- * import { saveRawPixelData } from '@nuxthealth/node-dicom';
- *
- * saveRawPixelData('/path/to/image.dcm', '/path/to/output.raw');
- * ```
- */
-export declare function saveRawPixelData(filePath: string, outPath: string): string
-
-/** * DICOM data extracted and grouped by hierarchy scope.
- *
- * Result structure when using `GroupingStrategy.ByScope`.
- * Tags are organized into sections based on their DICOM hierarchy level.
- * Empty sections are omitted from the output.
- *
- * ## Hierarchy Levels
- * - **patient**: Patient demographics and identification
- * - **study**: Study-level metadata and workflow info
- * - **series**: Series-level imaging parameters
- * - **instance**: Instance-specific data (per image/file)
- * - **equipment**: Device and acquisition equipment info
- * - **custom**: User-defined custom/private tags
- *
- * @example
- * ```typescript
- * import { DicomFile, ScopedDicomData } from '@nuxthealth/node-dicom';
- *
- * const dicom = new DicomFile();
- * dicom.open('ct-scan.dcm');
- *
- * const json = dicom.extract(
- *   ['PatientName', 'PatientID', 'StudyDate', 'Modality', 'SOPInstanceUID'],
- *   undefined,
- *   'ByScope'
- * );
- *
- * const data: ScopedDicomData = JSON.parse(json);
- *
- * // Access by hierarchy level
- * if (data.patient) {
- *   console.log('Patient:', data.patient.PatientName);
- *   console.log('ID:', data.patient.PatientID);
- * }
- *
- * if (data.study) {
- *   console.log('Study Date:', data.study.StudyDate);
- * }
- *
- * if (data.series) {
- *   console.log('Modality:', data.series.Modality);
- * }
- *
- * if (data.instance) {
- *   console.log('SOP UID:', data.instance.SOPInstanceUID);
- * }
- * ```
- *
- * @example
- * ```typescript
- * // Type-safe processing
- * interface PatientInfo {
- *   PatientName?: string;
- *   PatientID?: string;
- *   PatientBirthDate?: string;
- * }
- *
- * interface StudyInfo {
- *   StudyInstanceUID?: string;
- *   StudyDate?: string;
- *   StudyDescription?: string;
- * }
- *
- * const data: ScopedDicomData = JSON.parse(json);
- *
- * const patient = data.patient as PatientInfo | undefined;
- * const study = data.study as StudyInfo | undefined;
- *
- * if (patient?.PatientID && study?.StudyInstanceUID) {
- *   // Process study for this patient
- *   console.log(`Patient ${patient.PatientID}: Study ${study.StudyInstanceUID}`);
- * }
- * ```
- */
-export interface ScopedDicomData {
-  /** Patient-level tags (demographics, identification) */
-  patient?: Record<string, string>
-  /** Study-level tags (study metadata, workflow) */
-  study?: Record<string, string>
-  /** Series-level tags (series metadata, imaging parameters) */
-  series?: Record<string, string>
-  /** Instance-level tags (per-image/file data) */
-  instance?: Record<string, string>
-  /** Equipment-level tags (device, manufacturer info) */
-  equipment?: Record<string, string>
-  /** Custom/private tags with user-defined names */
-  custom?: Record<string, string>
-}
-
 /** * Event data passed to event listeners.
  *
  * Contains information about the event that occurred.
@@ -1725,12 +1612,8 @@ export interface ScpEventDetails {
   studyInstanceUid?: string
   /** Series Instance UID */
   seriesInstanceUid?: string
-  /** Extracted DICOM tags (structured based on grouping strategy) */
-  tagsScoped?: ScopedDicomData
   /** Extracted DICOM tags (flat key-value pairs) */
-  tagsFlat?: Record<string, string>
-  /** Extracted DICOM tags (study-level grouping) */
-  tagsStudyLevel?: StudyLevelData
+  tags?: Record<string, string>
   /** Error message (for OnError events) */
   error?: string
   /** Study completion data with full hierarchy */
@@ -1740,9 +1623,8 @@ export interface ScpEventDetails {
 /** Series data within a study */
 export interface SeriesHierarchyData {
   seriesInstanceUid: string
-  tagsScoped?: ScopedDicomData
-  tagsFlat?: Record<string, string>
-  tagsStudyLevel?: StudyLevelData
+  /** Series level tags only */
+  tags?: Record<string, string>
   instances: Array<InstanceHierarchyData>
 }
 
@@ -1930,8 +1812,6 @@ export interface StoreScpOptions {
   extractTags?: Array<'AccessionNumber' | 'AcquisitionDate' | 'AcquisitionDateTime' | 'AcquisitionNumber' | 'AcquisitionTime' | 'ActualCardiacTriggerTimePriorToRPeak' | 'ActualFrameDuration' | 'AdditionalPatientHistory' | 'AdmissionID' | 'AdmittingDiagnosesDescription' | 'AnatomicalOrientationType' | 'AnatomicRegionSequence' | 'AnodeTargetMaterial' | 'BeamLimitingDeviceAngle' | 'BitsAllocated' | 'BitsStored' | 'BluePaletteColorLookupTableDescriptor' | 'BodyPartExamined' | 'BodyPartThickness' | 'BranchOfService' | 'BurnedInAnnotation' | 'ChannelSensitivity' | 'CineRate' | 'CollimatorType' | 'Columns' | 'CompressionForce' | 'ContentDate' | 'ContentTime' | 'ContrastBolusAgent' | 'ContrastBolusIngredient' | 'ContrastBolusIngredientConcentration' | 'ContrastBolusRoute' | 'ContrastBolusStartTime' | 'ContrastBolusStopTime' | 'ContrastBolusTotalDose' | 'ContrastBolusVolume' | 'ContrastFlowDuration' | 'ContrastFlowRate' | 'ConvolutionKernel' | 'CorrectedImage' | 'CountsSource' | 'DataCollectionDiameter' | 'DecayCorrection' | 'DeidentificationMethod' | 'DerivationDescription' | 'DetectorTemperature' | 'DeviceSerialNumber' | 'DistanceSourceToDetector' | 'DistanceSourceToPatient' | 'EchoTime' | 'EthnicGroup' | 'Exposure' | 'ExposureInMicroAmpereSeconds' | 'ExposureTime' | 'FilterType' | 'FlipAngle' | 'FocalSpots' | 'FrameDelay' | 'FrameIncrementPointer' | 'FrameOfReferenceUID' | 'FrameTime' | 'GantryAngle' | 'GeneratorPower' | 'GraphicAnnotationSequence' | 'GreenPaletteColorLookupTableDescriptor' | 'HeartRate' | 'HighBit' | 'ImageComments' | 'ImageLaterality' | 'ImageOrientationPatient' | 'ImagePositionPatient' | 'ImagerPixelSpacing' | 'ImageTriggerDelay' | 'ImageType' | 'ImagingFrequency' | 'ImplementationClassUID' | 'ImplementationVersionName' | 'InstanceCreationDate' | 'InstanceCreationTime' | 'InstanceNumber' | 'InstitutionName' | 'IntensifierSize' | 'IssuerOfAdmissionID' | 'KVP' | 'LargestImagePixelValue' | 'LargestPixelValueInSeries' | 'Laterality' | 'LossyImageCompression' | 'LossyImageCompressionMethod' | 'LossyImageCompressionRatio' | 'MagneticFieldStrength' | 'Manufacturer' | 'ManufacturerModelName' | 'MedicalRecordLocator' | 'MilitaryRank' | 'Modality' | 'MultiplexGroupTimeOffset' | 'NameOfPhysiciansReadingStudy' | 'NominalCardiacTriggerDelayTime' | 'NominalInterval' | 'NumberOfFrames' | 'NumberOfSlices' | 'NumberOfTemporalPositions' | 'NumberOfWaveformChannels' | 'NumberOfWaveformSamples' | 'Occupation' | 'OperatorsName' | 'OtherPatientIDs' | 'OtherPatientNames' | 'OverlayBitPosition' | 'OverlayBitsAllocated' | 'OverlayColumns' | 'OverlayData' | 'OverlayOrigin' | 'OverlayRows' | 'OverlayType' | 'PaddleDescription' | 'PatientAge' | 'PatientBirthDate' | 'PatientBreedDescription' | 'PatientComments' | 'PatientID' | 'PatientIdentityRemoved' | 'PatientName' | 'PatientPosition' | 'PatientSex' | 'PatientSize' | 'PatientSpeciesDescription' | 'PatientSupportAngle' | 'PatientTelephoneNumbers' | 'PatientWeight' | 'PerformedProcedureStepDescription' | 'PerformedProcedureStepID' | 'PerformedProcedureStepStartDate' | 'PerformedProcedureStepStartTime' | 'PerformedProtocolCodeSequence' | 'PerformingPhysicianName' | 'PhotometricInterpretation' | 'PhysiciansOfRecord' | 'PixelAspectRatio' | 'PixelPaddingRangeLimit' | 'PixelPaddingValue' | 'PixelRepresentation' | 'PixelSpacing' | 'PlanarConfiguration' | 'PositionerPrimaryAngle' | 'PositionerSecondaryAngle' | 'PositionReferenceIndicator' | 'PreferredPlaybackSequencing' | 'PresentationIntentType' | 'PresentationLUTShape' | 'PrimaryAnatomicStructureSequence' | 'PrivateInformationCreatorUID' | 'ProtocolName' | 'QualityControlImage' | 'RadiationMachineName' | 'RadiationSetting' | 'RadionuclideTotalDose' | 'RadiopharmaceuticalInformationSequence' | 'RadiopharmaceuticalStartDateTime' | 'RadiopharmaceuticalStartTime' | 'RadiopharmaceuticalVolume' | 'ReasonForTheRequestedProcedure' | 'ReceivingApplicationEntityTitle' | 'RecognizableVisualFeatures' | 'RecommendedDisplayFrameRate' | 'ReconstructionDiameter' | 'ReconstructionTargetCenterPatient' | 'RedPaletteColorLookupTableDescriptor' | 'ReferencedBeamNumber' | 'ReferencedImageSequence' | 'ReferencedPatientPhotoSequence' | 'ReferencedPerformedProcedureStepSequence' | 'ReferencedRTPlanSequence' | 'ReferencedSOPClassUID' | 'ReferencedSOPInstanceUID' | 'ReferencedStudySequence' | 'ReferringPhysicianName' | 'RepetitionTime' | 'RequestAttributesSequence' | 'RequestedContrastAgent' | 'RequestedProcedureDescription' | 'RequestedProcedureID' | 'RequestingPhysician' | 'RescaleIntercept' | 'RescaleSlope' | 'RescaleType' | 'ResponsibleOrganization' | 'ResponsiblePerson' | 'ResponsiblePersonRole' | 'Rows' | 'RTImageDescription' | 'RTImageLabel' | 'SamplesPerPixel' | 'SamplingFrequency' | 'ScanningSequence' | 'SendingApplicationEntityTitle' | 'SeriesDate' | 'SeriesDescription' | 'SeriesInstanceUID' | 'SeriesNumber' | 'SeriesTime' | 'SeriesType' | 'SliceLocation' | 'SliceThickness' | 'SmallestImagePixelValue' | 'SmallestPixelValueInSeries' | 'SoftwareVersions' | 'SOPClassUID' | 'SOPInstanceUID' | 'SoundPathLength' | 'SourceApplicationEntityTitle' | 'SourceImageSequence' | 'SpacingBetweenSlices' | 'SpecificCharacterSet' | 'StationName' | 'StudyComments' | 'StudyDate' | 'StudyDescription' | 'StudyID' | 'StudyInstanceUID' | 'StudyTime' | 'TableHeight' | 'TableTopLateralPosition' | 'TableTopLongitudinalPosition' | 'TableTopVerticalPosition' | 'TableType' | 'TemporalPositionIdentifier' | 'TemporalResolution' | 'TextObjectSequence' | 'TimezoneOffsetFromUTC' | 'TransducerFrequency' | 'TransducerType' | 'TransferSyntaxUID' | 'TriggerTime' | 'TriggerTimeOffset' | 'UltrasoundColorDataPresent' | 'Units' | 'VOILUTFunction' | 'WaveformOriginality' | 'WaveformSequence' | 'WindowCenter' | 'WindowCenterWidthExplanation' | 'WindowWidth' | 'XRayTubeCurrent' | (string & {})>
   /** Custom private tags to extract with user-defined names */
   extractCustomTags?: Array<CustomTag>
-  /** Grouping strategy for extracted tags: 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom' (default: 'ByScope') */
-  groupingStrategy?: 'ByScope' | 'Flat' | 'StudyLevel' | 'Custom' | (string & {})
 }
 
 /** * Events emitted by the DICOM C-STORE SCU client during file transfer operations.
@@ -2054,142 +1934,9 @@ export interface StoreScuOptions {
 /** Study hierarchy data for OnStudyCompleted event */
 export interface StudyHierarchyData {
   studyInstanceUid: string
-  tagsScoped?: ScopedDicomData
-  tagsFlat?: Record<string, string>
-  tagsStudyLevel?: StudyLevelData
+  /** Patient + Study level tags only */
+  tags?: Record<string, string>
   series: Array<SeriesHierarchyData>
-}
-
-/** * DICOM data extracted and grouped by study level.
- *
- * Result structure when using `GroupingStrategy.StudyLevel`.
- * Separates data that persists across all instances in a study (study-level)
- * from data that varies per file (instance-level).
- *
- * ## Two-Tier Structure
- * - **studyLevel**: Patient + Study tags (same for all instances in a study)
- * - **instanceLevel**: Series + Instance + Equipment tags (varies per file)
- * - **custom**: User-defined custom/private tags
- *
- * This grouping is particularly useful for:
- * - Study deduplication (use studyLevel as the key)
- * - Batch processing (group files by studyLevel)
- * - Database optimization (separate study and instance tables)
- * - Study aggregation (combine multiple instances using studyLevel)
- *
- * @example
- * ```typescript
- * import { DicomFile, StudyLevelData } from '@nuxthealth/node-dicom';
- *
- * const dicom = new DicomFile();
- * dicom.open('series1-image1.dcm');
- *
- * const json = dicom.extract(
- *   [
- *     'PatientID', 'PatientName',           // Study-level
- *     'StudyInstanceUID', 'StudyDate',      // Study-level
- *     'SeriesNumber', 'InstanceNumber',     // Instance-level
- *     'SOPInstanceUID', 'Modality'          // Instance-level
- *   ],
- *   undefined,
- *   'StudyLevel'
- * );
- *
- * const data: StudyLevelData = JSON.parse(json);
- *
- * // Study-level data (same for all instances in this study)
- * console.log('Study Key:');
- * console.log(data.studyLevel);
- * // {
- * //   PatientID: '12345',
- * //   PatientName: 'DOE^JOHN',
- * //   StudyInstanceUID: '1.2.3.4.5...',
- * //   StudyDate: '20240101'
- * // }
- *
- * // Instance-level data (unique per file)
- * console.log('Instance Data:');
- * console.log(data.instanceLevel);
- * // {
- * //   SeriesNumber: '1',
- * //   InstanceNumber: '1',
- * //   SOPInstanceUID: '1.2.3.4.5.6...',
- * //   Modality: 'CT'
- * // }
- * ```
- *
- * @example
- * ```typescript
- * // Study deduplication workflow
- * interface StudyKey {
- *   PatientID: string;
- *   StudyInstanceUID: string;
- * }
- *
- * const studyMap = new Map<string, StudyKey>();
- * const files = ['img1.dcm', 'img2.dcm', 'img3.dcm'];
- *
- * for (const file of files) {
- *   const dicom = new DicomFile();
- *   dicom.open(file);
- *
- *   const json = dicom.extract(
- *     ['PatientID', 'StudyInstanceUID', 'SOPInstanceUID'],
- *     undefined,
- *     'StudyLevel'
- *   );
- *
- *   const data: StudyLevelData = JSON.parse(json);
- *
- *   // Use studyLevel as deduplication key
- *   const studyKey = JSON.stringify(data.studyLevel);
- *   if (!studyMap.has(studyKey)) {
- *     studyMap.set(studyKey, data.studyLevel as any);
- *     console.log('New study:', studyKey);
- *   }
- *
- *   // Process instance-specific data
- *   console.log('Instance:', data.instanceLevel?.SOPInstanceUID);
- * }
- *
- * console.log(`Total unique studies: ${studyMap.size}`);
- * ```
- *
- * @example
- * ```typescript
- * // Database insertion with normalized schema
- * import { DicomFile, StudyLevelData } from '@nuxthealth/node-dicom';
- *
- * async function importDicomToDb(filePath: string, db: Database) {
- *   const dicom = new DicomFile();
- *   dicom.open(filePath);
- *
- *   const json = dicom.extract(
- *     ['PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID'],
- *     undefined,
- *     'StudyLevel'
- *   );
- *
- *   const data: StudyLevelData = JSON.parse(json);
- *
- *   // Insert or update study table (study-level data)
- *   await db.upsert('studies', data.studyLevel);
- *
- *   // Insert instance table (instance-level data)
- *   await db.insert('instances', {
- *     ...data.instanceLevel,
- *     filePath: filePath
- *   });
- * }
- * ```
- */
-export interface StudyLevelData {
-  /** Study-level data: Patient + Study tags (persists across all instances) */
-  studyLevel?: Record<string, string>
-  /** Instance-level data: Series + Instance + Equipment tags (varies per file) */
-  instanceLevel?: Record<string, string>
-  /** Custom/private tags with user-defined names */
-  custom?: Record<string, string>
 }
 
 /** Tag scope classification based on DICOM hierarchy */
@@ -2201,16 +1948,24 @@ export declare const enum TagScope {
   Equipment = 'Equipment'
 }
 
+export interface TransferCompletedData {
+  totalFiles: number
+  successful: number
+  failed: number
+  durationSeconds: number
+}
+
 /** * Event data for OnTransferCompleted event.
  *
  * Emitted once when all files have been transferred.
  */
 export interface TransferCompletedEvent {
   message: string
+  data?: TransferCompletedData
+}
+
+export interface TransferStartedData {
   totalFiles: number
-  successful: number
-  failed: number
-  durationSeconds: number
 }
 
 /** * Event data for OnTransferStarted event.
@@ -2219,7 +1974,7 @@ export interface TransferCompletedEvent {
  */
 export interface TransferStartedEvent {
   message: string
-  totalFiles: number
+  data?: TransferStartedData
 }
 
 /** Transfer Syntax configuration object */
