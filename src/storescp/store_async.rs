@@ -3,10 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dicom_core::Tag;
 use dicom_dictionary_std::tags;
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
-use dicom_object::{FileMetaTableBuilder, InMemDicomObject, StandardDataDictionary};
+use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_ul::{
     association::ServerAssociation,
@@ -20,69 +19,252 @@ use tracing::{debug, info, warn, error};
 use serde::Serialize;
 use async_trait::async_trait;
 
-use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreSCP};
-use crate::storescp::s3_storage::{build_s3_bucket, s3_put_object};
+use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreScp, ScpEventDetails, StudyHierarchyData, SeriesHierarchyData, InstanceHierarchyData};
+use crate::utils::{build_s3_bucket, s3_put_object};
+use crate::tag_extractor::{CustomTag, GroupingStrategy, ExtractionResult, ScopedDicomData, StudyLevelData};
+use crate::dicom_tags::{parse_tag, get_tag_scope, TagScope};
 
+// New hierarchy for OnStudyCompleted event
 #[derive(Clone, Debug, Serialize)]
-struct ClinicalData {
-    patient_name: String,
-    patient_id: String,
-    patient_birth_date: String,
-    patient_sex: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct Study {
+struct StudyHierarchy {
+    #[serde(rename = "studyInstanceUid")]
     study_instance_uid: String,
-    clinical_data: ClinicalData,
-    series: Vec<Series>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<ExtractionResult>,
+    series: Vec<SeriesHierarchy>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct Series {
+struct SeriesHierarchy {
+    #[serde(rename = "seriesInstanceUid")]
     series_instance_uid: String,
-    series_number: i64,
-    body_part_examined: String,
-    protocol_name: String,
-    contrast_bolus_agent: String,
-    instances: Vec<Instance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<ExtractionResult>,
+    instances: Vec<InstanceHierarchy>,
 }
 
-
 #[derive(Clone, Debug, Serialize)]
-struct Instance {
+struct InstanceHierarchy {
+    #[serde(rename = "sopInstanceUid")]
     sop_instance_uid: String,
-    instance_number: i64,
-    file_path: String,
-    rows: i64,
-    columns: i64,
-    bits_allocated: i64,
-    bits_stored: i64,
-    high_bit: i64,
-    pixel_representation: i64,
-    photometric_interpretation: String,
-    planar_configuration: i64,
-    pixel_aspect_ratio: String,
-    pixel_spacing: String,
-    lossy_image_compression: String,
+    #[serde(rename = "sopClassUid")]
+    sop_class_uid: String,
+    #[serde(rename = "transferSyntaxUid")]
+    transfer_syntax_uid: String,
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<ExtractionResult>,
 }
 
 lazy_static::lazy_static! {
-    static ref STUDY_STORE: Mutex<HashMap<String, Study>> = Mutex::new(HashMap::new());
+    static ref STUDY_STORE: Mutex<HashMap<String, StudyHierarchy>> = Mutex::new(HashMap::new());
+}
+
+/// Extract tags from InMemDicomObject with grouping strategy
+fn extract_tags_from_inmem(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+    strategy: GroupingStrategy,
+) -> ExtractionResult {
+    match strategy {
+        GroupingStrategy::ByScope => ExtractionResult::Scoped(extract_by_scope_inmem(obj, tag_names, custom_tags)),
+        GroupingStrategy::Flat => ExtractionResult::Flat(extract_flat_inmem(obj, tag_names, custom_tags)),
+        GroupingStrategy::StudyLevel => ExtractionResult::StudyLevel(extract_study_level_inmem(obj, tag_names, custom_tags)),
+        GroupingStrategy::Custom => ExtractionResult::Scoped(extract_by_scope_inmem(obj, tag_names, custom_tags)),
+    }
+}
+
+fn extract_by_scope_inmem(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+) -> ScopedDicomData {
+    let mut result = ScopedDicomData::default();
+    let mut patient = HashMap::new();
+    let mut study = HashMap::new();
+    let mut series = HashMap::new();
+    let mut instance = HashMap::new();
+    let mut equipment = HashMap::new();
+    let mut custom = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    let scope = get_tag_scope(tag);
+                    let value = value_str.to_string();
+                    
+                    match scope {
+                        TagScope::Patient => { patient.insert(tag_name.clone(), value); },
+                        TagScope::Study => { study.insert(tag_name.clone(), value); },
+                        TagScope::Series => { series.insert(tag_name.clone(), value); },
+                        TagScope::Instance => { instance.insert(tag_name.clone(), value); },
+                        TagScope::Equipment => { equipment.insert(tag_name.clone(), value); },
+                    }
+                }
+            }
+        }
+    }
+    
+    for custom_tag in custom_tags {
+        if let Ok(tag) = parse_tag(&custom_tag.tag) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    custom.insert(custom_tag.name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    if !patient.is_empty() { result.patient = Some(patient); }
+    if !study.is_empty() { result.study = Some(study); }
+    if !series.is_empty() { result.series = Some(series); }
+    if !instance.is_empty() { result.instance = Some(instance); }
+    if !equipment.is_empty() { result.equipment = Some(equipment); }
+    if !custom.is_empty() { result.custom = Some(custom); }
+    
+    result
+}
+
+fn extract_flat_inmem(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    result.insert(tag_name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    for custom_tag in custom_tags {
+        if let Ok(tag) = parse_tag(&custom_tag.tag) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    result.insert(custom_tag.name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    result
+}
+
+fn extract_study_level_inmem(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+) -> StudyLevelData {
+    let mut result = StudyLevelData::default();
+    let mut study_level = HashMap::new();
+    let mut instance_level = HashMap::new();
+    let mut custom = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    let scope = get_tag_scope(tag);
+                    let value = value_str.to_string();
+                    
+                    match scope {
+                        TagScope::Patient | TagScope::Study => {
+                            study_level.insert(tag_name.clone(), value);
+                        },
+                        TagScope::Series | TagScope::Instance | TagScope::Equipment => {
+                            instance_level.insert(tag_name.clone(), value);
+                        },
+                    }
+                }
+            }
+        }
+    }
+    
+    for custom_tag in custom_tags {
+        if let Ok(tag) = parse_tag(&custom_tag.tag) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    custom.insert(custom_tag.name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    if !study_level.is_empty() { result.study_level = Some(study_level); }
+    if !instance_level.is_empty() { result.instance_level = Some(instance_level); }
+    if !custom.is_empty() { result.custom = Some(custom); }
+    
+    result
+}
+
+/// Extract tags at specific hierarchy level (study/series/instance) based on scope
+fn extract_at_hierarchy_level(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+    level: HierarchyLevel,
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    let scope = get_tag_scope(tag);
+                    let include = match level {
+                        HierarchyLevel::Study => matches!(scope, TagScope::Patient | TagScope::Study),
+                        HierarchyLevel::Series => matches!(scope, TagScope::Series),
+                        HierarchyLevel::Instance => matches!(scope, TagScope::Instance | TagScope::Equipment),
+                    };
+                    
+                    if include {
+                        result.insert(tag_name.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Custom tags always go to instance level
+    if matches!(level, HierarchyLevel::Instance) {
+        for custom_tag in custom_tags {
+            if let Ok(tag) = parse_tag(&custom_tag.tag) {
+                if let Ok(elem) = obj.element(tag) {
+                    if let Ok(value_str) = elem.to_str() {
+                        result.insert(custom_tag.name.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    result
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HierarchyLevel {
+    Study,
+    Series,
+    Instance,
 }
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
-    args: &StoreSCP,
-    on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
-    on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
+    args: &StoreScp,
+    on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever> {
-    let StoreSCP {
+    let StoreScp {
         verbose,
         calling_ae_title,
         strict,
-        uncompressed_only,
-        promiscuous,
         max_pdu_length,
         out_dir,
         port: _,
@@ -90,29 +272,65 @@ pub async fn run_store_async(
         storage_backend,
         s3_config,
         store_with_file_meta,
+        extract_tags,
+        extract_custom_tags,
+        grouping_strategy: _,
+        abstract_syntax_mode,
+        abstract_syntaxes,
+        transfer_syntax_mode,
+        transfer_syntaxes,
     } = args;
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
         .accept_any()
         .ae_title(calling_ae_title)
         .strict(*strict)
-        .max_pdu_length(*max_pdu_length)
-        .promiscuous(*promiscuous);
+        .max_pdu_length(*max_pdu_length);
 
-    if *uncompressed_only {
-        options = options
-            .with_transfer_syntax("1.2.840.10008.1.2")
-            .with_transfer_syntax("1.2.840.10008.1.2.1");
-    } else {
-        for ts in TransferSyntaxRegistry.iter() {
-            if !ts.is_unsupported() {
-                options = options.with_transfer_syntax(ts.uid());
+    // Configure abstract syntaxes based on mode
+    use crate::storescp::{AbstractSyntaxMode, TransferSyntaxMode};
+    match abstract_syntax_mode {
+        AbstractSyntaxMode::All => {
+            options = options.promiscuous(true);
+        },
+        AbstractSyntaxMode::AllStorage => {
+            // Use the default list of storage SOP classes
+            for uid in ABSTRACT_SYNTAXES {
+                options = options.with_abstract_syntax(*uid);
+            }
+        },
+        AbstractSyntaxMode::Custom => {
+            // Use user-provided list
+            use crate::storescp::sop_classes::map_sop_class_name;
+            for name_or_uid in abstract_syntaxes {
+                let uid = map_sop_class_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                options = options.with_abstract_syntax(uid);
             }
         }
-    };
+    }
 
-    for uid in ABSTRACT_SYNTAXES {
-        options = options.with_abstract_syntax(*uid);
+    // Configure transfer syntaxes based on mode
+    match transfer_syntax_mode {
+        TransferSyntaxMode::All => {
+            for ts in TransferSyntaxRegistry.iter() {
+                if !ts.is_unsupported() {
+                    options = options.with_transfer_syntax(ts.uid());
+                }
+            }
+        },
+        TransferSyntaxMode::UncompressedOnly => {
+            options = options
+                .with_transfer_syntax("1.2.840.10008.1.2")      // Implicit VR Little Endian
+                .with_transfer_syntax("1.2.840.10008.1.2.1");   // Explicit VR Little Endian
+        },
+        TransferSyntaxMode::Custom => {
+            // Use user-provided list
+            use crate::storescp::sop_classes::map_transfer_syntax_name;
+            for name_or_uid in transfer_syntaxes {
+                let uid = map_transfer_syntax_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                options = options.with_transfer_syntax(uid);
+            }
+        }
     }
 
     let peer_addr = scu_stream.peer_addr().ok();
@@ -148,6 +366,8 @@ pub async fn run_store_async(
         s3_config,
         *store_with_file_meta,
         args,
+        extract_tags,
+        extract_custom_tags,
         on_file_stored,
         on_study_completed,
     )
@@ -174,9 +394,11 @@ async fn inner(
     storage_backend: &crate::storescp::StorageBackendType,
     s3_config: &Option<crate::storescp::S3Config>,
     store_with_file_meta: bool,
-    args: &StoreSCP,
-    on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
-    on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
+    args: &StoreScp,
+    extract_tags: &[String],
+    extract_custom_tags: &[CustomTag],
+    on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever>
 {
     let study_timeout_duration = Duration::from_secs(study_timeout as u64);
@@ -362,45 +584,152 @@ async fn inner(
                                     crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
                                 };
 
-                                // Extract additional metadata
-                                let (clinical_data, mut series, instance) = extract_additional_metadata(
+                                // Extract metadata using the tag extractor with configured strategy
+                                let grouping = match &args.grouping_strategy {
+                                    crate::storescp::GroupingStrategy::ByScope => GroupingStrategy::ByScope,
+                                    crate::storescp::GroupingStrategy::Flat => GroupingStrategy::Flat,
+                                    crate::storescp::GroupingStrategy::StudyLevel => GroupingStrategy::StudyLevel,
+                                    crate::storescp::GroupingStrategy::Custom => GroupingStrategy::Custom,
+                                };
+                                
+                                let extraction_result = extract_tags_from_inmem(
                                     &obj,
-                                    sop_instance_uid.clone(),
-                                    file_path_str.clone(),
-                                    series_instance_uid.clone(),
+                                    extract_tags,
+                                    extract_custom_tags,
+                                    grouping,
                                 );
+                                
+                                // Create event details with proper types
+                                let (tags_scoped, tags_flat, tags_study_level) = match extraction_result {
+                                    ExtractionResult::Scoped(scoped) => (Some(scoped), None, None),
+                                    ExtractionResult::Flat(flat) => (None, Some(flat), None),
+                                    ExtractionResult::StudyLevel(study_level) => (None, None, Some(study_level)),
+                                };
 
+                                // Emit the OnFileStored event with proper typed structs
+                                on_file_stored(ScpEventDetails {
+                                    file: Some(file_path_str.clone()),
+                                    sop_instance_uid: Some(sop_instance_uid.clone()),
+                                    sop_class_uid: Some(sop_class_uid.clone()),
+                                    transfer_syntax_uid: Some(transfer_syntax_uid.clone()),
+                                    study_instance_uid: Some(study_instance_uid.clone()),
+                                    series_instance_uid: Some(series_instance_uid.clone()),
+                                    tags_scoped,
+                                    tags_flat,
+                                    tags_study_level,
+                                    error: None,
+                                    study: None,
+                                });
 
-                                // Emit the OnFileStored event
-                                on_file_stored(
-                                    serde_json::json!({
-                                        "sop_class-uid": sop_class_uid.clone(),
-                                        "sop_instance_uid": sop_instance_uid.clone(),
-                                        "transfer_syntax_uid": transfer_syntax_uid.clone(),
-                                        "study_instance_uid": study_instance_uid.clone(),
-                                        "series_instance_uid": series.series_instance_uid,
-                                        "series_number": series.series_number,
-                                        "instance": instance
-                                    })
-                                );
-
-                                // Update global store
+                                // Update global study store with hierarchy
+                                // Extract data based on grouping strategy to avoid duplication
                                 {
                                     let mut store = STUDY_STORE.lock().await;
-                                    let study = store.entry(study_instance_uid.clone()).or_insert_with(|| Study {
+                                    
+                                    // Extract tags based on grouping strategy
+                                    let (study_tags, series_tags, instance_tags) = match grouping {
+                                        // ByScope: Return ScopedDicomData with proper hierarchy
+                                        GroupingStrategy::ByScope | GroupingStrategy::Custom => {
+                                            let study_result = ExtractionResult::Scoped(ScopedDicomData {
+                                                patient: {
+                                                    let data = extract_at_hierarchy_level(
+                                                        &obj, extract_tags, extract_custom_tags, HierarchyLevel::Study
+                                                    );
+                                                    if data.is_empty() { None } else { Some(data) }
+                                                },
+                                                study: None,
+                                                series: None,
+                                                instance: None,
+                                                equipment: None,
+                                                custom: None,
+                                            });
+                                            let series_result = ExtractionResult::Scoped(ScopedDicomData {
+                                                patient: None,
+                                                study: None,
+                                                series: {
+                                                    let data = extract_at_hierarchy_level(
+                                                        &obj, extract_tags, extract_custom_tags, HierarchyLevel::Series
+                                                    );
+                                                    if data.is_empty() { None } else { Some(data) }
+                                                },
+                                                instance: None,
+                                                equipment: None,
+                                                custom: None,
+                                            });
+                                            let instance_result = ExtractionResult::Scoped(ScopedDicomData {
+                                                patient: None,
+                                                study: None,
+                                                series: None,
+                                                instance: {
+                                                    let data = extract_at_hierarchy_level(
+                                                        &obj, extract_tags, extract_custom_tags, HierarchyLevel::Instance
+                                                    );
+                                                    if data.is_empty() { None } else { Some(data) }
+                                                },
+                                                equipment: None,
+                                                custom: None,
+                                            });
+                                            (Some(study_result), Some(series_result), Some(instance_result))
+                                        },
+                                        // Flat: All data as flat HashMap
+                                        GroupingStrategy::Flat => {
+                                            let all_data = extract_flat_inmem(&obj, extract_tags, extract_custom_tags);
+                                            let result = ExtractionResult::Flat(all_data);
+                                            (None, None, Some(result))
+                                        },
+                                        // StudyLevel: Study+Patient at study level, rest at instance
+                                        GroupingStrategy::StudyLevel => {
+                                            let study_level_data = extract_at_hierarchy_level(
+                                                &obj, extract_tags, extract_custom_tags, HierarchyLevel::Study
+                                            );
+                                            let mut instance_level_data = extract_at_hierarchy_level(
+                                                &obj, extract_tags, extract_custom_tags, HierarchyLevel::Series
+                                            );
+                                            instance_level_data.extend(extract_at_hierarchy_level(
+                                                &obj, extract_tags, extract_custom_tags, HierarchyLevel::Instance
+                                            ));
+                                            
+                                            let study_result = ExtractionResult::StudyLevel(StudyLevelData {
+                                                study_level: if study_level_data.is_empty() { None } else { Some(study_level_data) },
+                                                instance_level: None,
+                                                custom: None,
+                                            });
+                                            let instance_result = ExtractionResult::StudyLevel(StudyLevelData {
+                                                study_level: None,
+                                                instance_level: if instance_level_data.is_empty() { None } else { Some(instance_level_data) },
+                                                custom: None,
+                                            });
+                                            (Some(study_result), None, Some(instance_result))
+                                        },
+                                    };
+                                    
+                                    let study = store.entry(study_instance_uid.clone()).or_insert_with(|| StudyHierarchy {
                                         study_instance_uid: study_instance_uid.clone(),
-                                        clinical_data: clinical_data.clone(),
+                                        tags: study_tags.clone(),
                                         series: Vec::new(),
                                     });
 
-                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series.series_instance_uid);
+                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
+                                    let instance_hierarchy = InstanceHierarchy {
+                                        sop_instance_uid: sop_instance_uid.clone(),
+                                        sop_class_uid: sop_class_uid.clone(),
+                                        transfer_syntax_uid: transfer_syntax_uid.clone(),
+                                        file: file_path_str.clone(),
+                                        tags: instance_tags.clone(),
+                                    };
+                                    
                                     if let Some(series_entry) = series_entry {
-                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == instance.sop_instance_uid) {
-                                            series_entry.instances.push(instance);
+                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
+                                            series_entry.instances.push(instance_hierarchy);
                                         }
                                     } else {
-                                        series.instances.push(instance);
-                                        study.series.push(series);
+                                        let mut new_series = SeriesHierarchy {
+                                            series_instance_uid: series_instance_uid.clone(),
+                                            tags: series_tags.clone(),
+                                            instances: Vec::new(),
+                                        };
+                                        new_series.instances.push(instance_hierarchy);
+                                        study.series.push(new_series);
                                     }
                                 }
 
@@ -415,8 +744,69 @@ async fn inner(
                                             let mut store = STUDY_STORE.lock().await;
                                             if let Some(study) = store.remove(&study_instance_uid_clone) {
                                                 let on_study_completed = on_study_completed_clone.lock().await;
-                                                let study_data = serde_json::json!(study);
-                                                on_study_completed(study_data);
+                                                
+                                                // Convert StudyHierarchy to StudyHierarchyData
+                                                let (study_tags_scoped, study_tags_flat, study_tags_study_level) = if let Some(tags) = study.tags {
+                                                    match tags {
+                                                        ExtractionResult::Scoped(scoped) => (Some(scoped), None, None),
+                                                        ExtractionResult::Flat(flat) => (None, Some(flat), None),
+                                                        ExtractionResult::StudyLevel(study_level) => (None, None, Some(study_level)),
+                                                    }
+                                                } else {
+                                                    (None, None, None)
+                                                };
+                                                
+                                                let series_data: Vec<SeriesHierarchyData> = study.series.into_iter().map(|s| {
+                                                    let (series_tags_scoped, series_tags_flat, series_tags_study_level) = if let Some(tags) = s.tags {
+                                                        match tags {
+                                                            ExtractionResult::Scoped(scoped) => (Some(scoped), None, None),
+                                                            ExtractionResult::Flat(flat) => (None, Some(flat), None),
+                                                            ExtractionResult::StudyLevel(study_level) => (None, None, Some(study_level)),
+                                                        }
+                                                    } else {
+                                                        (None, None, None)
+                                                    };
+                                                    
+                                                    let instances_data: Vec<InstanceHierarchyData> = s.instances.into_iter().map(|i| {
+                                                        let (inst_tags_scoped, inst_tags_flat, inst_tags_study_level) = if let Some(tags) = i.tags {
+                                                            match tags {
+                                                                ExtractionResult::Scoped(scoped) => (Some(scoped), None, None),
+                                                                ExtractionResult::Flat(flat) => (None, Some(flat), None),
+                                                                ExtractionResult::StudyLevel(study_level) => (None, None, Some(study_level)),
+                                                            }
+                                                        } else {
+                                                            (None, None, None)
+                                                        };
+                                                        
+                                                        InstanceHierarchyData {
+                                                            sop_instance_uid: i.sop_instance_uid,
+                                                            sop_class_uid: i.sop_class_uid,
+                                                            transfer_syntax_uid: i.transfer_syntax_uid,
+                                                            file: i.file,
+                                                            tags_scoped: inst_tags_scoped,
+                                                            tags_flat: inst_tags_flat,
+                                                            tags_study_level: inst_tags_study_level,
+                                                        }
+                                                    }).collect();
+                                                    
+                                                    SeriesHierarchyData {
+                                                        series_instance_uid: s.series_instance_uid,
+                                                        tags_scoped: series_tags_scoped,
+                                                        tags_flat: series_tags_flat,
+                                                        tags_study_level: series_tags_study_level,
+                                                        instances: instances_data,
+                                                    }
+                                                }).collect();
+                                                
+                                                let study_hierarchy_data = StudyHierarchyData {
+                                                    study_instance_uid: study.study_instance_uid,
+                                                    tags_scoped: study_tags_scoped,
+                                                    tags_flat: study_tags_flat,
+                                                    tags_study_level: study_tags_study_level,
+                                                    series: series_data,
+                                                };
+                                                
+                                                on_study_completed(study_hierarchy_data);
                                             }
                                         });
                                     }
@@ -492,65 +882,7 @@ async fn inner(
     Ok(())
 }
 
-/**
- * Helper functions to extract DICOM tags as strings or integers.
- */
-fn get_str_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> String {
-    obj.element(tag)
-        .ok()
-        .and_then(|e| e.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_default()
-}
 
-fn get_int_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> i64 {
-    obj.element(tag)
-        .ok()
-        .and_then(|e| e.to_int().ok())
-        .unwrap_or(0)
-}
-
-fn extract_additional_metadata(
-    obj: &InMemDicomObject<StandardDataDictionary>,
-    sop_instance_uid: String,
-    file_path: String,
-    series_instance_uid: String,
-) -> (ClinicalData, Series, Instance) {
-    let clinical_data = ClinicalData {
-        patient_name: get_str_tag(obj, tags::PATIENT_NAME),
-        patient_id: get_str_tag(obj, tags::PATIENT_ID),
-        patient_birth_date: get_str_tag(obj, tags::PATIENT_BIRTH_DATE),
-        patient_sex: get_str_tag(obj, tags::PATIENT_SEX),
-    };
-
-    let instance = Instance {
-        sop_instance_uid: sop_instance_uid.clone(),
-        instance_number: get_int_tag(obj, tags::INSTANCE_NUMBER),
-        file_path,
-        rows: get_int_tag(obj, tags::ROWS),
-        columns: get_int_tag(obj, tags::COLUMNS),
-        bits_allocated: get_int_tag(obj, tags::BITS_ALLOCATED),
-        bits_stored: get_int_tag(obj, tags::BITS_STORED),
-        high_bit: get_int_tag(obj, tags::HIGH_BIT),
-        pixel_representation: get_int_tag(obj, tags::PIXEL_REPRESENTATION),
-        photometric_interpretation: get_str_tag(obj, tags::PHOTOMETRIC_INTERPRETATION),
-        planar_configuration: get_int_tag(obj, tags::PLANAR_CONFIGURATION),
-        pixel_aspect_ratio: get_str_tag(obj, tags::PIXEL_ASPECT_RATIO),
-        pixel_spacing: get_str_tag(obj, tags::PIXEL_SPACING),
-        lossy_image_compression: get_str_tag(obj, tags::LOSSY_IMAGE_COMPRESSION),
-    };
-
-    let series = Series {
-        series_instance_uid,
-        series_number: get_int_tag(obj, tags::SERIES_NUMBER),
-        body_part_examined: get_str_tag(obj, tags::BODY_PART_EXAMINED),
-        protocol_name: get_str_tag(obj, tags::PROTOCOL_NAME),
-        contrast_bolus_agent: get_str_tag(obj, tags::CONTRAST_BOLUS_AGENT),
-        instances: vec![], // Will be filled later
-    };
-
-    (clinical_data, series, instance)
-}
 
 
 
@@ -586,10 +918,13 @@ impl StorageBackend for S3Backend {
         let key = path.replace("\\", "/");
         let bucket = self.bucket.clone();
         let data = data.to_vec();
-        s3_put_object(&bucket, &key, &data).await.map_err(|e| {
-            error!("Failed to upload file to S3: {}", e);
-            Box::<dyn std::error::Error>::from(e)
-        })?;
-        Ok(())
+        let s3_result = s3_put_object(&bucket, &key, &data).await;
+        match s3_result {
+            Ok(()) => Ok(()),
+            Err(_e) => {
+                error!("Failed to upload file to S3: {}", key);
+                Err(format!("S3 upload failed: {}", key).into())
+            }
+        }
     }
 }

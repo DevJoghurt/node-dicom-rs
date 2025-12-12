@@ -9,17 +9,23 @@ use dicom_ul::{
     ClientAssociation, Pdu,
 };
 use indicatif::ProgressBar;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use snafu::{OptionExt, Report, ResultExt};
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::storescu::{
     check_presentation_contexts, into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu,
-    DicomFile, Error, Event, EventData, FileSource, MissingAttributeSnafu, ReadDatasetSnafu, 
-    ReadFilePathSnafu, ScuSnafu, StoreSCU, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
+    DicomFile, Error, FileSendingEvent, FileSentEvent, FileErrorEvent, FileSource, MissingAttributeSnafu, 
+    ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, StoreScu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
 };
 
-
+#[derive(Clone)]
+pub struct StoreCallbacks {
+    pub on_file_sending: Option<Arc<ThreadsafeFunction<FileSendingEvent, ()>>>,
+    pub on_file_sent: Option<Arc<ThreadsafeFunction<FileSentEvent, ()>>>,
+    pub on_file_error: Option<Arc<ThreadsafeFunction<FileErrorEvent, ()>>>,
+}
 
 pub async fn send_file(
     mut scu: ClientAssociation<TcpStream>,
@@ -29,6 +35,9 @@ pub async fn send_file(
     progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
     verbose: bool,
     fail_first: bool,
+    callbacks: &StoreCallbacks,
+    successful_count: Arc<Mutex<u32>>,
+    failed_count: Arc<Mutex<u32>>,
 ) -> Result<ClientAssociation<TcpStream>, Error>
 {
     let start_time = std::time::Instant::now();
@@ -40,15 +49,14 @@ pub async fn send_file(
             FileSource::S3(key) => format!("s3://{}", key),
         };
         
-        StoreSCU::emit_event(Event::OnFileSending, EventData {
-            message: "Sending file".to_string(),
-            data: Some(serde_json::json!({
-                "file": file_path,
-                "sopInstanceUid": file.sop_instance_uid,
-                "sopClassUid": file.sop_class_uid,
-                "transferSyntax": ts_uid_selected,
-            }).to_string()),
-        });
+        if let Some(cb) = &callbacks.on_file_sending {
+            cb.call(Ok(FileSendingEvent {
+                message: "Sending file".to_string(),
+                file: file_path.clone(),
+                sop_instance_uid: file.sop_instance_uid.clone(),
+                sop_class_uid: file.sop_class_uid.clone(),
+            }), ThreadsafeFunctionCallMode::NonBlocking);
+        }
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
 
         let mut cmd_data = Vec::with_capacity(128);
@@ -72,21 +80,25 @@ pub async fn send_file(
             }
             FileSource::S3(key) => {
                 // Download S3 file on-demand to minimize memory usage
-                use crate::storescu::s3_storage;
+                use crate::utils::s3_get_object;
                 let bucket = s3_bucket.expect("S3 bucket should be available for S3 files");
-                let data = s3_storage::s3_get_object(bucket, key)
-                    .await
-                    .map_err(|e| Error::ReadFilePath {
-                        path: format!("s3://{}", key),
-                        source: Box::new(dicom_object::ReadError::ReadFile {
-                            filename: format!("s3://{}", key).into(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("Failed to download S3 file for sending: {}", e),
-                            ),
-                            backtrace: std::backtrace::Backtrace::capture(),
-                        }),
-                    })?;
+                let s3_result = s3_get_object(bucket, key).await;
+                let data = match s3_result {
+                    Ok(d) => d,
+                    Err(_e) => {
+                        return Err(Error::ReadFilePath {
+                            path: format!("s3://{}", key),
+                            source: Box::new(dicom_object::ReadError::ReadFile {
+                                filename: format!("s3://{}", key).into(),
+                                source: std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Failed to download S3 file for sending: {}", key),
+                                ),
+                                backtrace: std::backtrace::Backtrace::capture(),
+                            }),
+                        });
+                    }
+                };
                 
                 // Auto-detect file format by checking for DICM magic bytes
                 let has_dicm_magic = data.len() > 132 && &data[128..132] == b"DICM";
@@ -248,24 +260,25 @@ pub async fn send_file(
                             );
                         }
                         
+                        // Increment successful count
+                        *successful_count.lock().await += 1;
+                        
                         // Emit OnFileSent event
                         let file_path = match &file.source {
                             FileSource::Local(path) => path.display().to_string(),
                             FileSource::S3(key) => format!("s3://{}", key),
                         };
                         
-                        StoreSCU::emit_event(Event::OnFileSent, EventData {
-                            message: "File sent successfully".to_string(),
-                            data: Some(serde_json::json!({
-                                "file": file_path,
-                                "sopInstanceUid": storage_sop_instance_uid,
-                                "sopClassUid": file.sop_class_uid,
-                                "transferSyntax": ts_uid_selected,
-                                "durationMs": elapsed.as_millis(),
-                                "durationSeconds": elapsed.as_secs_f64(),
-                                "status": "success",
-                            }).to_string()),
-                        });
+                        if let Some(cb) = &callbacks.on_file_sent {
+                            cb.call(Ok(FileSentEvent {
+                                message: "File sent successfully".to_string(),
+                                file: file_path.clone(),
+                                sop_instance_uid: file.sop_instance_uid.clone(),
+                                sop_class_uid: file.sop_class_uid.clone(),
+                                transfer_syntax: ts_uid_selected.to_string(),
+                                duration_seconds: elapsed.as_secs_f64(),
+                            }), ThreadsafeFunctionCallMode::NonBlocking);
+                        }
                     }
                     // Warning
                     1 | 0x0107 | 0x0116 | 0xB000..=0xBFFF => {
@@ -297,23 +310,25 @@ pub async fn send_file(
                             storage_sop_instance_uid, status
                         );
                         
+                        // Increment failed count
+                        *failed_count.lock().await += 1;
+                        
                         // Emit OnFileError event
                         let file_path = match &file.source {
                             FileSource::Local(path) => path.display().to_string(),
                             FileSource::S3(key) => format!("s3://{}", key),
                         };
                         
-                        StoreSCU::emit_event(Event::OnFileError, EventData {
-                            message: format!("Failed to store file (status code {:04X}H)", status),
-                            data: Some(serde_json::json!({
-                                "file": file_path,
-                                "sopInstanceUid": storage_sop_instance_uid,
-                                "sopClassUid": &file.sop_class_uid,
-                                "statusCode": format!("{:04X}H", status),
-                                "durationMs": elapsed.as_millis(),
-                                "error": format!("Status code {:04X}H", status),
-                            }).to_string()),
-                        });
+                        if let Some(cb) = &callbacks.on_file_error {
+                            cb.call(Ok(FileErrorEvent {
+                                message: format!("Failed to store file (status code {:04X}H)", status),
+                                file: file_path,
+                                error: format!("Status code {:04X}H", status),
+                                sop_instance_uid: Some(storage_sop_instance_uid.to_string()),
+                                sop_class_uid: Some(file.sop_class_uid.clone()),
+                                file_transfer_syntax: Some(file.file_transfer_syntax.clone()),
+                            }), ThreadsafeFunctionCallMode::NonBlocking);
+                        }
                         
                         if fail_first {
                             let _ = scu.abort().await;
@@ -351,6 +366,9 @@ pub async fn inner(
     verbose: bool,
     never_transcode: bool,
     ignore_sop_class: bool,
+    callbacks: &StoreCallbacks,
+    successful_count: Arc<Mutex<u32>>,
+    failed_count: Arc<Mutex<u32>>,
 ) -> Result<(), Error>
 {
     let mut message_id = 1;
@@ -393,7 +411,7 @@ pub async fn inner(
                 }
             }
         }
-        scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first).await?;
+        scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first, callbacks, successful_count.clone(), failed_count.clone()).await?;
         message_id += 1;
     }
     let _ = scu.release().await;
