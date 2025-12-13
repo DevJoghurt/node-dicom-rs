@@ -3,6 +3,10 @@
 pub mod storescu;
 pub mod object;
 pub mod storescp;
+pub mod utils;
+
+// Re-export utils for backward compatibility
+pub use utils::{dicom_tags, helpers};
 
 #[macro_use]
 extern crate napi_derive;

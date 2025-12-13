@@ -1,85 +1,65 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use dicom_dictionary_std::tags;
 use dicom_encoding::TransferSyntaxIndex;
-use dicom_object::{open_file, InMemDicomObject};
+use dicom_object::{open_file, FileDicomObject, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 use dicom_ul::{
     pdu::{PDataValue, PDataValueType},
-    ClientAssociation, ClientAssociationOptions, Pdu,
+    ClientAssociation, Pdu,
 };
 use indicatif::ProgressBar;
-use snafu::{OptionExt, ResultExt};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use snafu::{OptionExt, Report, ResultExt};
+use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::storescu::{
-    into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu, DicomFile, Error,
-    MissingAttributeSnafu, ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu,
-    UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu, ResultObject, ResultStatus,
+    check_presentation_contexts, into_ts, store_req_command, ConvertFieldSnafu, CreateCommandSnafu,
+    DicomFile, Error, FileSendingEvent, FileSendingData, FileSentEvent, FileSentData, 
+    FileErrorEvent, FileErrorData, FileSource, MissingAttributeSnafu, 
+    ReadDatasetSnafu, ReadFilePathSnafu, ScuSnafu, StoreScu, UnsupportedFileTransferSyntaxSnafu, WriteDatasetSnafu,
 };
 
-#[allow(clippy::too_many_arguments)]
-pub async fn get_scu(
-    addr: String,
-    calling_ae_title: String,
-    called_ae_title: Option<String>,
-    max_pdu_length: u32,
-    username: Option<String>,
-    password: Option<String>,
-    kerberos_service_ticket: Option<String>,
-    saml_assertion: Option<String>,
-    jwt: Option<String>,
-    presentation_contexts: HashSet<(String, String)>,
-) -> Result<ClientAssociation<TcpStream>, Error> {
-    let mut scu_init = ClientAssociationOptions::new()
-        .calling_ae_title(calling_ae_title)
-        .max_pdu_length(max_pdu_length);
-
-    for (storage_sop_class_uid, transfer_syntax) in &presentation_contexts {
-        scu_init = scu_init.with_presentation_context(storage_sop_class_uid, vec![transfer_syntax]);
-    }
-
-    if let Some(called_ae_title) = called_ae_title {
-        scu_init = scu_init.called_ae_title(called_ae_title);
-    }
-
-    if let Some(username) = username {
-        scu_init = scu_init.username(username);
-    }
-
-    if let Some(password) = password {
-        scu_init = scu_init.password(password);
-    }
-
-    if let Some(kerberos_service_ticket) = kerberos_service_ticket {
-        scu_init = scu_init.kerberos_service_ticket(kerberos_service_ticket);
-    }
-
-    if let Some(saml_assertion) = saml_assertion {
-        scu_init = scu_init.saml_assertion(saml_assertion);
-    }
-
-    if let Some(jwt) = jwt {
-        scu_init = scu_init.jwt(jwt);
-    }
-
-    scu_init
-        .establish_with_async(&addr)
-        .await
-        .map_err(Box::from)
-        .context(ScuSnafu)
+#[derive(Clone)]
+pub struct StoreCallbacks {
+    pub on_file_sending: Option<Arc<ThreadsafeFunction<FileSendingEvent, ()>>>,
+    pub on_file_sent: Option<Arc<ThreadsafeFunction<FileSentEvent, ()>>>,
+    pub on_file_error: Option<Arc<ThreadsafeFunction<FileErrorEvent, ()>>>,
 }
 
 pub async fn send_file(
     mut scu: ClientAssociation<TcpStream>,
     file: DicomFile,
+    s3_bucket: Option<&s3::Bucket>,
     message_id: u16,
     progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
     verbose: bool,
     fail_first: bool,
-) -> Result<(ClientAssociation<TcpStream>, ResultObject), Error> {
+    callbacks: &StoreCallbacks,
+    successful_count: Arc<Mutex<u32>>,
+    failed_count: Arc<Mutex<u32>>,
+) -> Result<ClientAssociation<TcpStream>, Error>
+{
+    let start_time = std::time::Instant::now();
+    
     if let (Some(pc_selected), Some(ts_uid_selected)) = (file.pc_selected, file.ts_selected) {
+        // Emit OnFileSending event
+        let file_path = match &file.source {
+            FileSource::Local(path) => path.display().to_string(),
+            FileSource::S3(key) => format!("s3://{}", key),
+        };
+        
+        if let Some(cb) = &callbacks.on_file_sending {
+            cb.call(Ok(FileSendingEvent {
+                message: "Sending file".to_string(),
+                data: Some(FileSendingData {
+                    file: file_path.clone(),
+                    sop_instance_uid: file.sop_instance_uid.clone(),
+                    sop_class_uid: file.sop_class_uid.clone(),
+                }),
+            }), ThreadsafeFunctionCallMode::NonBlocking);
+        }
         let cmd = store_req_command(&file.sop_class_uid, &file.sop_instance_uid, message_id);
 
         let mut cmd_data = Vec::with_capacity(128);
@@ -91,11 +71,90 @@ pub async fn send_file(
         .context(CreateCommandSnafu)?;
 
         let mut object_data = Vec::with_capacity(2048);
-        let dicom_file = open_file(&file.file)
-            .map_err(Box::from)
-            .context(ReadFilePathSnafu {
-                path: file.file.display().to_string(),
-            })?;
+        
+        // Load DICOM file from source (local filesystem or S3)
+        let dicom_file: FileDicomObject<InMemDicomObject> = match &file.source {
+            FileSource::Local(path) => {
+                open_file(path)
+                    .map_err(Box::from)
+                    .context(ReadFilePathSnafu {
+                        path: path.display().to_string(),
+                    })?
+            }
+            FileSource::S3(key) => {
+                // Download S3 file on-demand to minimize memory usage
+                use crate::utils::s3_get_object;
+                let bucket = s3_bucket.expect("S3 bucket should be available for S3 files");
+                let s3_result = s3_get_object(bucket, key).await;
+                let data = match s3_result {
+                    Ok(d) => d,
+                    Err(_e) => {
+                        return Err(Error::ReadFilePath {
+                            path: format!("s3://{}", key),
+                            source: Box::new(dicom_object::ReadError::ReadFile {
+                                filename: format!("s3://{}", key).into(),
+                                source: std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("Failed to download S3 file for sending: {}", key),
+                                ),
+                                backtrace: std::backtrace::Backtrace::capture(),
+                            }),
+                        });
+                    }
+                };
+                
+                // Auto-detect file format by checking for DICM magic bytes
+                let has_dicm_magic = data.len() > 132 && &data[128..132] == b"DICM";
+                
+                if !has_dicm_magic {
+                    // Dataset-only file (no DICOM meta header) - read as InMemDicomObject and create meta
+                    let obj = InMemDicomObject::read_dataset_with_ts(
+                        &data[..],
+                        &dicom_transfer_syntax_registry::entries::EXPLICIT_VR_LITTLE_ENDIAN.erased(),
+                    )
+                    .or_else(|_| {
+                        InMemDicomObject::read_dataset_with_ts(
+                            &data[..],
+                            &dicom_transfer_syntax_registry::entries::IMPLICIT_VR_LITTLE_ENDIAN.erased(),
+                        )
+                    })
+                    .context(ReadDatasetSnafu)?;
+                    
+                    // Create file meta information from dataset attributes
+                    use dicom_dictionary_std::tags;
+                    use dicom_object::FileMetaTableBuilder;
+                    
+                    let sop_class_uid = obj.element(tags::SOP_CLASS_UID)
+                        .context(MissingAttributeSnafu { tag: tags::SOP_CLASS_UID })?
+                        .to_str()
+                        .context(ConvertFieldSnafu { tag: tags::SOP_CLASS_UID })?
+                        .trim()
+                        .to_string();
+                    let sop_instance_uid = obj.element(tags::SOP_INSTANCE_UID)
+                        .context(MissingAttributeSnafu { tag: tags::SOP_INSTANCE_UID })?
+                        .to_str()
+                        .context(ConvertFieldSnafu { tag: tags::SOP_INSTANCE_UID })?
+                        .trim()
+                        .to_string();
+                    
+                    let meta = FileMetaTableBuilder::new()
+                        .media_storage_sop_class_uid(&sop_class_uid)
+                        .media_storage_sop_instance_uid(&sop_instance_uid)
+                        .transfer_syntax(dicom_transfer_syntax_registry::entries::EXPLICIT_VR_LITTLE_ENDIAN.uid())
+                        .build()
+                        .map_err(|e| Error::ReadDataset { 
+                            source: dicom_object::ReadError::ParseMetaDataSet { source: e } 
+                        })?;
+                    
+                    obj.with_exact_meta(meta)
+                } else {
+                    // Full DICOM file with meta header
+                    dicom_object::from_reader(&data[..])
+                        .context(ReadDatasetSnafu)?
+                }
+            }
+        };
+        
         let ts_selected = TransferSyntaxRegistry
             .get(&ts_uid_selected)
             .with_context(|| UnsupportedFileTransferSyntaxSnafu {
@@ -113,9 +172,13 @@ pub async fn send_file(
         let nbytes = cmd_data.len() + object_data.len();
 
         if verbose {
+            let source_display = match &file.source {
+                FileSource::Local(path) => path.display().to_string(),
+                FileSource::S3(key) => format!("s3://{}", key),
+            };
             info!(
                 "Sending file {} (~ {} kB), uid={}, sop={}, ts={}",
-                file.file.display(),
+                source_display,
                 nbytes / 1_000,
                 &file.sop_instance_uid,
                 &file.sop_class_uid,
@@ -191,8 +254,35 @@ pub async fn send_file(
                 match status {
                     // Success
                     0 => {
+                        let elapsed = start_time.elapsed();
                         if verbose {
-                            info!("Successfully stored instance {}", storage_sop_instance_uid);
+                            info!(
+                                "Successfully stored instance {} in {:.2}s",
+                                storage_sop_instance_uid,
+                                elapsed.as_secs_f64()
+                            );
+                        }
+                        
+                        // Increment successful count
+                        *successful_count.lock().await += 1;
+                        
+                        // Emit OnFileSent event
+                        let file_path = match &file.source {
+                            FileSource::Local(path) => path.display().to_string(),
+                            FileSource::S3(key) => format!("s3://{}", key),
+                        };
+                        
+                        if let Some(cb) = &callbacks.on_file_sent {
+                            cb.call(Ok(FileSentEvent {
+                                message: "File sent successfully".to_string(),
+                                data: Some(FileSentData {
+                                    file: file_path.clone(),
+                                    sop_instance_uid: file.sop_instance_uid.clone(),
+                                    sop_class_uid: file.sop_class_uid.clone(),
+                                    transfer_syntax: ts_uid_selected.to_string(),
+                                    duration_seconds: elapsed.as_secs_f64(),
+                                }),
+                            }), ThreadsafeFunctionCallMode::NonBlocking);
                         }
                     }
                     // Warning
@@ -219,10 +309,34 @@ pub async fn send_file(
                         }
                     }
                     _ => {
+                        let elapsed = start_time.elapsed();
                         error!(
                             "Failed to store instance `{}` (status code {:04X}H)",
                             storage_sop_instance_uid, status
                         );
+                        
+                        // Increment failed count
+                        *failed_count.lock().await += 1;
+                        
+                        // Emit OnFileError event
+                        let file_path = match &file.source {
+                            FileSource::Local(path) => path.display().to_string(),
+                            FileSource::S3(key) => format!("s3://{}", key),
+                        };
+                        
+                        if let Some(cb) = &callbacks.on_file_error {
+                            cb.call(Ok(FileErrorEvent {
+                                message: format!("Failed to store file (status code {:04X}H)", status),
+                                data: Some(FileErrorData {
+                                    file: file_path,
+                                    error: format!("Status code {:04X}H", status),
+                                    sop_instance_uid: Some(storage_sop_instance_uid.to_string()),
+                                    sop_class_uid: Some(file.sop_class_uid.clone()),
+                                    file_transfer_syntax: Some(file.file_transfer_syntax.clone()),
+                                }),
+                            }), ThreadsafeFunctionCallMode::NonBlocking);
+                        }
+                        
                         if fail_first {
                             let _ = scu.abort().await;
                             std::process::exit(-2);
@@ -247,11 +361,66 @@ pub async fn send_file(
     if let Some(pb) = progress_bar.as_ref() {
         pb.lock().await.inc(1)
     };
-    Ok((
-        scu,
-        ResultObject {
-            status: ResultStatus::Success,
-            message: format!("Successfully sent file: {}", file.file.display()),
-        },
-    ))
+    Ok(scu)
+}
+
+pub async fn inner(
+    mut scu: ClientAssociation<TcpStream>,
+    d_files: Arc<Mutex<Vec<DicomFile>>>,
+    s3_bucket: Option<Arc<s3::Bucket>>,
+    progress_bar: Option<&Arc<tokio::sync::Mutex<ProgressBar>>>,
+    fail_first: bool,
+    verbose: bool,
+    never_transcode: bool,
+    ignore_sop_class: bool,
+    callbacks: &StoreCallbacks,
+    successful_count: Arc<Mutex<u32>>,
+    failed_count: Arc<Mutex<u32>>,
+) -> Result<(), Error>
+{
+    let mut message_id = 1;
+    loop {
+        let file = {
+            let mut files = d_files.lock().await;
+            files.pop()
+        };
+        let mut file = match file {
+            Some(file) => file,
+            None => break,
+        };
+        let r: Result<_, Error> = check_presentation_contexts(
+            &file,
+            scu.presentation_contexts(),
+            ignore_sop_class,
+            never_transcode,
+        );
+        match r {
+            Ok((pc, ts)) => {
+                if verbose {
+                    let source_display = match &file.source {
+                        FileSource::Local(path) => path.display().to_string(),
+                        FileSource::S3(key) => format!("s3://{}", key),
+                    };
+                    debug!(
+                        "{}: Selected presentation context: {:?}",
+                        source_display,
+                        pc
+                    );
+                }
+                file.pc_selected = Some(pc);
+                file.ts_selected = Some(ts);
+            }
+            Err(e) => {
+                error!("{}", Report::from_error(e));
+                if fail_first {
+                    let _ = scu.abort().await;
+                    std::process::exit(-2);
+                }
+            }
+        }
+        scu = send_file(scu, file, s3_bucket.as_deref(), message_id, progress_bar, verbose, fail_first, callbacks, successful_count.clone(), failed_count.clone()).await?;
+        message_id += 1;
+    }
+    let _ = scu.release().await;
+    Ok(())
 }

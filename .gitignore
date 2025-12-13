@@ -2,6 +2,8 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=node
 
 __test__/fixtures/
+playground/testdata
+playground/test-*
 
 ### Node ###
 # Logs

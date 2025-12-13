@@ -1,130 +1,327 @@
 # node-dicom-rs
 
-Nodejs bindings for dicom-rs tools.
+High-performance Node.js bindings for DICOM (Digital Imaging and Communications in Medicine) operations, powered by Rust and [dicom-rs](https://github.com/Enet4/dicom-rs).
+
+## Features
+
+- **StoreScp**: Receive DICOM files over the network with C-STORE SCP server
+- **StoreScu**: Send DICOM files to remote PACS systems
+- **DicomFile**: Read, parse, and manipulate DICOM files with full metadata extraction
+- **Storage Backends**: Filesystem and S3-compatible object storage support
+- **TypeScript Support**: Full TypeScript definitions with autocomplete for 300+ DICOM tags
+- **Event-driven API**: Consistent callback-based events with typed data structures
 
 ## Installation
 
-To install the package, run the following command:
-
-```sh
-npm install node-dicom-rs
+```bash
+npm install @nuxthealth/node-dicom
 ```
 
-## First steps
+## Quick Start
 
-### Receiving DICOM files
+### Receiving DICOM Files (StoreScp)
 
-To receive DICOM files using the `StoreSCP` class, you can use the following example:
+```typescript
+import { StoreScp } from '@nuxthealth/node-dicom';
 
-```javascript
-import { StoreSCP } from 'node-dicom-rs';
-
-const receiver = new StoreSCP({
+const receiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'MY-SCP',
+    outDir: './dicom-storage',
     verbose: true,
-    calling_ae_title: 'STORE-SCP',
-    strict: false,
-    uncompressed_only: false,
-    promiscuous: false,
-    max_pdu_length: 16384,
-    out_dir: './tmp',
-    port: 4446
+    extractTags: ['PatientName', 'StudyDate', 'Modality']
 });
 
-receiver.addEventListener('OnFileStored', (eventData) => {
-    console.log('File stored:', eventData);
+receiver.onFileStored((err, event) => {
+    if (err) return console.error('Error:', err);
+    const data = event.data;
+    if (!data) return;
+    
+    console.log('File received:', data.file);
+    if (data.tags) {
+        console.log('Patient:', data.tags.PatientName);
+        console.log('Study Date:', data.tags.StudyDate);
+        console.log('Modality:', data.tags.Modality);
+    }
+});
+
+receiver.onStudyCompleted((err, event) => {
+    if (err) return console.error('Error:', err);
+    const study = event.data?.study;
+    if (!study) return;
+    
+    console.log(`Study ${study.studyInstanceUid} complete`);
+    console.log(`${study.series.length} series, total instances: ${study.series.reduce((sum, s) => sum + s.instances.length, 0)}`);
 });
 
 receiver.listen();
 ```
 
-#### Events
+### Sending DICOM Files (StoreScu)
 
-The `StoreSCP` class emits the following events that you can listen to:
-
-- **OnServerStarted**: Triggered when the StoreSCP server has started and is listening for connections.
-
-- **OnFileStored**: Triggered when a DICOM file has been successfully received and stored.
-    - **Event data**: An object containing information about the stored file, such as the file path and metadata.
-
-- **OnStudyCompleted**: Triggered when all files for a study have been received and the study is considered complete.
-    - **Event data**: An object containing information about the stored study, such as series, instances and metadata.
-
-You can add event listeners using the `addEventListener` method:
-
-```javascript
-receiver.addEventListener('OnFileStored', (eventData) => {
-        console.log('File stored:', eventData);
-});
-
-receiver.addEventListener('OnStudyCompleted', (eventData) => {
-        console.error('Full study stored:', eventData);
-});
-```
-
-
-
-#### Storage Backends
-The `StoreSCP` class supports multiple storage backends for received DICOM files. Currently, the following backends are available:
-
-- **Filesystem** (default): Stores files on the local disk.
-- **S3**: Stores files in an Amazon S3 bucket.
-
-You can specify the backend using the `storage_backend` option when creating a `StoreSCP` instance. For example:
-
-```javascript
-const receiver = new StoreSCP({
-    storageBackend: 'S3', // default: Filesystem
-    s3Config: {
-        bucket: 'your-s3-bucket-name',
-        access_key_id: 'your-access-key-id',
-        secret_access_key: 'your-secret-access-key',
-        endpoint: 'http://localhost:7070'
-    },
-    // ...other options
-});
-```
-
-If no `storage_backend` is specified, files are stored on the local filesystem by default.
-
-### Sending DICOM files
-
-To send DICOM files using the `StoreScu` class, you can use the following example:
-
-```javascript
-import { StoreScu } from 'node-dicom-rs';
+```typescript
+import { StoreScu } from '@nuxthealth/node-dicom';
 
 const sender = new StoreScu({
-    addr: '127.0.0.1:4446',
+    addr: '192.168.1.100:104',
+    callingAeTitle: 'MY-SCU',
+    calledAeTitle: 'REMOTE-SCP',
     verbose: true
 });
 
-sender.addFile('./__test__/fixtures/test.dcm');
+// Add files
+sender.addFile('./path/to/file.dcm');
+sender.addDirectory('./dicom-folder');
 
-const result = await sender.send();
+// Send with progress tracking
+const result = await sender.send({
+    onFileSent: (err, event) => {
+        console.log('✓ File sent:', event.data?.sopInstanceUid);
+    },
+    onFileError: (err, event) => {
+        console.error('✗ Error:', event.message, event.data?.error);
+    },
+    onTransferCompleted: (err, event) => {
+        const data = event.data;
+        if (data) {
+            console.log(`Transfer complete! ${data.successful}/${data.totalFiles} files in ${data.durationSeconds.toFixed(2)}s`);
+        }
+    }
+});
 
-console.log(result);
+console.log('Result:', result);
 ```
 
-### Working with DICOM files
+### Working with DICOM Files
 
-To work with DICOM files using the `DicomFile` class, you can use the following example:
-
-```javascript
-import { DicomFile, saveRawPixelData } from 'node-dicom-rs';
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
 
 const file = new DicomFile();
+await file.open('./scan.dcm');
 
-file.open('./__test__/fixtures/test.dcm');
+// Extract specific tags (always returns flat structure)
+const data = file.extract(['PatientName', 'StudyDate', 'Modality']);
+console.log('Patient:', data.PatientName);
+console.log('Study Date:', data.StudyDate);
+console.log('Modality:', data.Modality);
 
-file.saveRawPixelData('./tmp/raw_pixel_data.jpg');
+// Get DICOM as JSON (without saving to file)
+const json = file.toJson(true);
+const obj = JSON.parse(json);
 
-saveRawPixelData('./__test__/fixtures/test.dcm', './tmp/raw_pixel_data_2.jpg');
+// Get pixel data info
+const pixelInfo = file.getPixelDataInfo();
+console.log(`Image: ${pixelInfo.width}x${pixelInfo.height}, ${pixelInfo.frames} frames`);
 
-console.log(file.getElements());
+// Get pixel data as Buffer (without saving to file)
+const pixelBuffer = file.getPixelData();
+console.log(`Pixel data: ${pixelBuffer.length} bytes`);
+
+// For compressed data, decode it
+if (pixelInfo.isCompressed) {
+    const decodedBuffer = file.getDecodedPixelData();
+    processImage(decodedBuffer, pixelInfo);
+}
+
+// NEW! Get processed pixel data with windowing, frame extraction, 8-bit conversion
+const displayReady = file.getProcessedPixelData({
+    applyVoiLut: true,      // Use WindowCenter/Width from file
+    convertTo8bit: true      // Convert to 8-bit for display (0-255)
+});
+
+// Custom window settings for different tissue types
+const boneWindow = file.getProcessedPixelData({
+    windowCenter: 300,       // Bone window
+    windowWidth: 1500,
+    convertTo8bit: true
+});
+
+// Or save pixel data to file (synchronous)
+file.saveRawPixelData('./output.raw');
 
 file.close();
 ```
 
+### Update DICOM Tags 🆕
+
+Modify tag values for anonymization or corrections:
+
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
+import crypto from 'crypto';
+
+const file = new DicomFile();
+await file.open('scan.dcm');
+
+// Update tags (changes in memory only)
+file.updateTags({
+    PatientName: 'ANONYMOUS',
+    PatientID: crypto.randomUUID(),
+    PatientBirthDate: '',
+    InstitutionName: 'ANONYMIZED'
+});
+
+// Save changes to new file
+await file.saveAsDicom('anonymized.dcm');
+file.close();
+```
+
+## Documentation
+
+For detailed documentation, see:
+
+- **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends
+- **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
+- **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
+- **[Tag Extraction Guide](./docs/tag-extraction.md)** - Tag extraction patterns and examples
+- **[Helper Functions Guide](./docs/helpers.md)** - Utility functions for tags, SOP classes, and transfer syntaxes
+
+## Key Features
+
+### Tag Extraction
+
+Extract DICOM metadata with ease:
+
+```typescript
+// DicomFile: Always returns flat structure
+const data = file.extract(['PatientName', 'StudyDate', 'Modality']);
+console.log('Patient:', data.PatientName);
+
+// StoreScp: Flat tags for OnFileStored
+receiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    console.log('Patient:', tags?.PatientName);
+});
+
+// StoreScp: Hierarchical with flat tags at each level for OnStudyCompleted
+receiver.onStudyCompleted((err, event) => {
+    const study = event.data?.study;
+    console.log('Study tags:', study?.tags); // Patient + Study level
+    study?.series.forEach(series => {
+        console.log('Series tags:', series.tags); // Series level
+        series.instances.forEach(instance => {
+            console.log('Instance tags:', instance.tags); // Instance + Equipment level
+        });
+    });
+});
+```
+
+### Tag Modification Before Storage 🆕
+
+Modify DICOM tags synchronously before files are saved using the `onBeforeStore` callback:
+
+```typescript
+const receiver = new StoreScp({
+    port: 4446,
+    outDir: './dicom-storage',
+    extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
+});
+
+// Anonymize incoming files before storage
+receiver.onBeforeStore((tags) => {
+    // Return modified tags - these will be written to the file
+    return {
+        ...tags,
+        PatientName: 'ANONYMOUS',
+        PatientID: `ANON_${Math.random().toString(36).substr(2, 9)}`,
+        PatientBirthDate: '', // Remove PHI
+        StudyDescription: tags.StudyDescription ? 
+            `ANONYMIZED - ${tags.StudyDescription}` : 
+            'ANONYMIZED STUDY'
+    };
+});
+
+await receiver.listen();
+```
+
+**Key Features:**
+- **Synchronous**: Blocks file storage until callback returns
+- **Pre-Storage**: Modifications applied BEFORE writing to disk
+- **Tag-Safe**: Only modifies extracted tags (specified in `extractTags`)
+- **Flexible**: Use for anonymization, validation, enrichment, or standardization
+
+**Use Cases:**
+- Real-time anonymization for research databases
+- Adding institution-specific metadata
+- Tag validation and quality control
+- Format standardization
+- PHI removal for GDPR/HIPAA compliance
+
+See [demos](./playground/demos/README.md#onbeforestore-callback) for complete examples.
+
+### TypeScript Autocomplete
+
+Full autocomplete support for 300+ DICOM tags:
+
+```typescript
+const data = file.extract([
+    'PatientName',      // Autocomplete suggests all standard tags
+    'StudyDate',
+    'Modality',
+    'SeriesDescription'
+]);
+```
+
+### Storage Backends
+
+Store received DICOM files to filesystem or S3:
+
+```typescript
+// S3 Storage
+const receiver = new StoreScp({
+    port: 4446,
+    storageBackend: 'S3',
+    s3Config: {
+        bucket: 'dicom-archive',
+        accessKey: 'YOUR_KEY',
+        secretKey: 'YOUR_SECRET',
+        endpoint: 'https://s3.amazonaws.com'
+    }
+});
+```
+
+### Configurable SCP Acceptance
+
+Control which DICOM types your SCP accepts:
+
+```typescript
+import { getCommonSopClasses, getCommonTransferSyntaxes } from '@nuxthealth/node-dicom';
+
+const sopClasses = getCommonSopClasses();
+const transferSyntaxes = getCommonTransferSyntaxes();
+
+const receiver = new StoreScp({
+    port: 4446,
+    abstractSyntaxMode: 'Custom',
+    abstractSyntaxes: [...sopClasses.ct, ...sopClasses.mr], // Only CT and MR
+    transferSyntaxMode: 'UncompressedOnly' // Only uncompressed
+});
+```
+
+## Examples
+
+Check the `playground/` directory for more examples:
+
+- Basic SCP receiver
+- SCU sender with batch processing
+- File metadata extraction
+- S3 storage integration
+- Custom tag extraction
+
+## Performance
+
+Built with Rust for maximum performance:
+- Fast DICOM parsing and validation
+- Efficient memory usage for large files
+- Native async/await support
+- Zero-copy operations where possible
 
 ## Credits
-- Code is based on the rust lib [dicom-rs](https://github.com/Enet4/dicom-rs) by Eduardo Pinho [Enet4](https://github.com/Enet4)
+
+- Built on [dicom-rs](https://github.com/Enet4/dicom-rs) by Eduardo Pinho [@Enet4](https://github.com/Enet4)
+- Uses [napi-rs](https://napi.rs/) for Rust ↔ Node.js bindings
+
+## License
+
+See LICENSE file for details.

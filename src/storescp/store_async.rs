@@ -1,132 +1,301 @@
-use dicom_dictionary_std::tags;
-use dicom_core::{dicom_value, DataElement, VR, Tag};
-use dicom_object::{InMemDicomObject, StandardDataDictionary, FileMetaTableBuilder};
-use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
-use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use dicom_ul::{pdu::PDataValueType, Pdu};
-use snafu::{OptionExt, Report, ResultExt, Whatever};
-use std::path::PathBuf;
-use tracing::{debug, info, warn, error};
 use std::collections::HashMap;
-use tokio::sync::Mutex;
-use std::time::Duration;
-use tokio::time::sleep;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+use dicom_dictionary_std::tags;
+use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
+use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
+use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
+use dicom_core::{dicom_value, DataElement, VR};
+use dicom_ul::{
+    association::ServerAssociation,
+    pdu::{PDataValueType, PresentationContextResultReason},
+    Pdu,
+};
+use snafu::{OptionExt, Report, ResultExt, Whatever};
+use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::{debug, info, warn, error};
 use serde::Serialize;
 use async_trait::async_trait;
 
-use crate::storescp::{transfer::ABSTRACT_SYNTAXES, StoreSCP};
-use crate::storescp::s3_storage::{build_s3_bucket, s3_put_object};
+use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreScp, ScpEventDetails, StudyHierarchyData, SeriesHierarchyData, InstanceHierarchyData};
+use crate::utils::{build_s3_bucket, s3_put_object, CustomTag};
+use crate::utils::dicom_tags::{parse_tag, get_tag_scope, TagScope};
 
+// New hierarchy for OnStudyCompleted event
 #[derive(Clone, Debug, Serialize)]
-struct ClinicalData {
-    patient_name: String,
-    patient_id: String,
-    patient_birth_date: String,
-    patient_sex: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct Study {
+struct StudyHierarchy {
+    #[serde(rename = "studyInstanceUid")]
     study_instance_uid: String,
-    clinical_data: ClinicalData,
-    series: Vec<Series>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<HashMap<String, String>>,
+    series: Vec<SeriesHierarchy>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct Series {
+struct SeriesHierarchy {
+    #[serde(rename = "seriesInstanceUid")]
     series_instance_uid: String,
-    series_number: i64,
-    body_part_examined: String,
-    protocol_name: String,
-    contrast_bolus_agent: String,
-    instances: Vec<Instance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<HashMap<String, String>>,
+    instances: Vec<InstanceHierarchy>,
 }
 
-
 #[derive(Clone, Debug, Serialize)]
-struct Instance {
+struct InstanceHierarchy {
+    #[serde(rename = "sopInstanceUid")]
     sop_instance_uid: String,
-    instance_number: i64,
-    file_path: String,
-    rows: i64,
-    columns: i64,
-    bits_allocated: i64,
-    bits_stored: i64,
-    high_bit: i64,
-    pixel_representation: i64,
-    photometric_interpretation: String,
-    planar_configuration: i64,
-    pixel_aspect_ratio: String,
-    pixel_spacing: String,
-    lossy_image_compression: String,
+    #[serde(rename = "sopClassUid")]
+    sop_class_uid: String,
+    #[serde(rename = "transferSyntaxUid")]
+    transfer_syntax_uid: String,
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<HashMap<String, String>>,
 }
 
 lazy_static::lazy_static! {
-    static ref STUDY_STORE: Mutex<HashMap<String, Study>> = Mutex::new(HashMap::new());
+    static ref STUDY_STORE: Mutex<HashMap<String, StudyHierarchy>> = Mutex::new(HashMap::new());
+}
+
+/// Extract tags from InMemDicomObject as flat structure
+fn extract_tags_flat(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    result.insert(tag_name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    for custom_tag in custom_tags {
+        if let Ok(tag) = parse_tag(&custom_tag.tag) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    result.insert(custom_tag.name.clone(), value_str.to_string());
+                }
+            }
+        }
+    }
+    
+    result
+}
+
+/// Extract tags at specific hierarchy level (study/series/instance) based on scope
+fn extract_at_hierarchy_level(
+    obj: &InMemDicomObject<dicom_dictionary_std::StandardDataDictionary>,
+    tag_names: &[String],
+    custom_tags: &[CustomTag],
+    level: HierarchyLevel,
+) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    
+    for tag_name in tag_names {
+        if let Ok(tag) = parse_tag(tag_name) {
+            if let Ok(elem) = obj.element(tag) {
+                if let Ok(value_str) = elem.to_str() {
+                    let scope = get_tag_scope(tag);
+                    let include = match level {
+                        HierarchyLevel::Study => matches!(scope, TagScope::Patient | TagScope::Study),
+                        HierarchyLevel::Series => matches!(scope, TagScope::Series),
+                        HierarchyLevel::Instance => matches!(scope, TagScope::Instance | TagScope::Equipment),
+                    };
+                    
+                    if include {
+                        result.insert(tag_name.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Custom tags always go to instance level
+    if matches!(level, HierarchyLevel::Instance) {
+        for custom_tag in custom_tags {
+            if let Ok(tag) = parse_tag(&custom_tag.tag) {
+                if let Ok(elem) = obj.element(tag) {
+                    if let Ok(value_str) = elem.to_str() {
+                        result.insert(custom_tag.name.clone(), value_str.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    result
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HierarchyLevel {
+    Study,
+    Series,
+    Instance,
 }
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
-    args: &StoreSCP,
-    on_file_stored: impl Fn(serde_json::Value) + Send + 'static,
-    on_study_completed: Arc<Mutex<dyn Fn(serde_json::Value) + Send + 'static>>
+    args: &StoreScp,
+    on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever> {
-    let StoreSCP {
+    let StoreScp {
         verbose,
         calling_ae_title,
         strict,
-        uncompressed_only,
-        promiscuous,
         max_pdu_length,
         out_dir,
         port: _,
-        study_timeout: _,
+        study_timeout,
         storage_backend,
         s3_config,
+        store_with_file_meta,
+        extract_tags,
+        extract_custom_tags,
+        abstract_syntax_mode,
+        abstract_syntaxes,
+        transfer_syntax_mode,
+        transfer_syntaxes,
+        on_before_store,
     } = args;
-    let verbose = *verbose;
-
-    let study_timeout_duration = Duration::from_secs(args.study_timeout as u64); // Configurable timeout
-
-    let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
-    let mut msgid = 1;
-    let mut sop_class_uid = "".to_string();
-    let mut sop_instance_uid = "".to_string();
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
         .accept_any()
         .ae_title(calling_ae_title)
         .strict(*strict)
-        .max_pdu_length(*max_pdu_length)
-        .promiscuous(*promiscuous);
+        .max_pdu_length(*max_pdu_length);
 
-    if *uncompressed_only {
-        options = options
-            .with_transfer_syntax("1.2.840.10008.1.2")
-            .with_transfer_syntax("1.2.840.10008.1.2.1");
-    } else {
-        for ts in TransferSyntaxRegistry.iter() {
-            if !ts.is_unsupported() {
-                options = options.with_transfer_syntax(ts.uid());
+    // Configure abstract syntaxes based on mode
+    use crate::storescp::{AbstractSyntaxMode, TransferSyntaxMode};
+    match abstract_syntax_mode {
+        AbstractSyntaxMode::All => {
+            options = options.promiscuous(true);
+        },
+        AbstractSyntaxMode::AllStorage => {
+            // Use the default list of storage SOP classes
+            for uid in ABSTRACT_SYNTAXES {
+                options = options.with_abstract_syntax(*uid);
+            }
+        },
+        AbstractSyntaxMode::Custom => {
+            // Use user-provided list
+            use crate::storescp::sop_classes::map_sop_class_name;
+            for name_or_uid in abstract_syntaxes {
+                let uid = map_sop_class_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                options = options.with_abstract_syntax(uid);
             }
         }
-    };
-
-    for uid in ABSTRACT_SYNTAXES {
-        options = options.with_abstract_syntax(*uid);
     }
 
-    let mut association = options
+    // Configure transfer syntaxes based on mode
+    match transfer_syntax_mode {
+        TransferSyntaxMode::All => {
+            for ts in TransferSyntaxRegistry.iter() {
+                if !ts.is_unsupported() {
+                    options = options.with_transfer_syntax(ts.uid());
+                }
+            }
+        },
+        TransferSyntaxMode::UncompressedOnly => {
+            options = options
+                .with_transfer_syntax("1.2.840.10008.1.2")      // Implicit VR Little Endian
+                .with_transfer_syntax("1.2.840.10008.1.2.1");   // Explicit VR Little Endian
+        },
+        TransferSyntaxMode::Custom => {
+            // Use user-provided list
+            use crate::storescp::sop_classes::map_transfer_syntax_name;
+            for name_or_uid in transfer_syntaxes {
+                let uid = map_transfer_syntax_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                options = options.with_transfer_syntax(uid);
+            }
+        }
+    }
+
+    let peer_addr = scu_stream.peer_addr().ok();
+    let association = options
         .establish_async(scu_stream)
         .await
         .whatever_context("could not establish association")?;
 
     info!("New association from {}", association.client_ae_title());
+    if *verbose {
+        debug!(
+            "> Presentation contexts: {:?}",
+            association.presentation_contexts()
+        );
+    }
     debug!(
-        "> Presentation contexts: {:?}",
+        "#accepted_presentation_contexts={}, acceptor_max_pdu_length={}, requestor_max_pdu_length={}",
         association.presentation_contexts()
+            .iter()
+            .filter(|pc| pc.reason == PresentationContextResultReason::Acceptance)
+            .count(),
+        association.acceptor_max_pdu_length(),
+        association.requestor_max_pdu_length(),
     );
+
+    let peer_title = association.client_ae_title().to_string();
+    inner(
+        association,
+        *verbose,
+        out_dir,
+        *study_timeout,
+        storage_backend,
+        s3_config,
+        *store_with_file_meta,
+        args,
+        extract_tags,
+        extract_custom_tags,
+        on_before_store,
+        on_file_stored,
+        on_study_completed,
+    )
+    .await?;
+
+    if let Some(peer_addr) = peer_addr {
+        info!(
+            "Dropping connection with {} ({})",
+            peer_title,
+            peer_addr
+        );
+    } else {
+        info!("Dropping connection with {}", peer_title);
+    }
+
+    Ok(())
+}
+
+async fn inner(
+    mut association: ServerAssociation<tokio::net::TcpStream>,
+    verbose: bool,
+    out_dir: &Option<String>,
+    study_timeout: u32,
+    storage_backend: &crate::storescp::StorageBackendType,
+    s3_config: &Option<crate::storescp::S3Config>,
+    store_with_file_meta: bool,
+    args: &StoreScp,
+    extract_tags: &[String],
+    extract_custom_tags: &[CustomTag],
+    on_before_store: &Option<Arc<napi::threadsafe_function::ThreadsafeFunction<std::collections::HashMap<String, String>, std::collections::HashMap<String, String>>>>,
+    on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
+    on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
+) -> Result<(), Whatever>
+{
+    let study_timeout_duration = Duration::from_secs(study_timeout as u64);
+
+    let mut instance_buffer: Vec<u8> = Vec::with_capacity(1024 * 1024);
+    let mut msgid = 1;
+    let mut sop_class_uid = "".to_string();
+    let mut sop_instance_uid = "".to_string();
 
     // --- Storage backend selection ---
     let storage_backend: Box<dyn StorageBackend> = match storage_backend {
@@ -283,10 +452,86 @@ pub async fn run_store_async(
                                 file_path.push(series_instance_uid.to_string());
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
 
-                                let obj_for_file = obj.clone();
+                                // Extract metadata as flat tags BEFORE saving
+                                let mut tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
+                                    Some(extract_tags_flat(&obj, extract_tags, extract_custom_tags))
+                                } else {
+                                    None
+                                };
+
+                                // Call on_before_store callback if provided
+                                // This allows modification of tags before saving (e.g., anonymization)
+                                let mut obj_to_save = obj.clone();
+                                if let Some(callback_arc) = on_before_store {
+                                    info!("on_before_store callback is set");
+                                    if let Some(ref extracted_tags) = tags {
+                                        info!("Extracted tags available, calling callback with {} tags", extracted_tags.len());
+                                        // Call the callback - using Blocking mode to wait for JS to complete
+                                        use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+                                        
+                                        // Create a channel to receive the modified tags
+                                        let (tx, rx) = tokio::sync::oneshot::channel();
+                                        
+                                        // Call the JS callback
+                                        let status = callback_arc.call_with_return_value(
+                                            Ok(extracted_tags.clone()),
+                                            ThreadsafeFunctionCallMode::Blocking,
+                                            move |result: Result<HashMap<String, String>, _>, _env| {
+                                                info!("Callback closure executed");
+                                                if let Ok(modified_tags) = result {
+                                                    info!("Received modified tags: {} entries", modified_tags.len());
+                                                    let _ = tx.send(modified_tags);
+                                                } else {
+                                                    error!("Callback returned error: {:?}", result);
+                                                }
+                                                Ok(())
+                                            }
+                                        );
+                                        info!("call_with_return_value status: {:?}", status);
+                                        
+                                        // Wait for the callback to complete
+                                        match rx.await {
+                                            Ok(modified_tags) => {
+                                                info!("Successfully received modified tags");
+                                                // Update the DICOM object with modified tags
+                                                // Only update tags that were in the original extracted set
+                                                for (tag_name, new_value) in &modified_tags {
+                                                    if extracted_tags.contains_key(tag_name) {
+                                                    // Parse the tag name and update the object
+                                                    if let Ok(tag) = crate::utils::parse_tag(tag_name) {
+                                                        // Get VR from existing element or default to LO
+                                                        let vr = obj_to_save.element(tag)
+                                                            .map(|e| e.vr())
+                                                            .unwrap_or(VR::LO);
+                                                        
+                                                        // Create new element with updated value
+                                                        let new_element = DataElement::new(tag, vr, dicom_value!(Str, new_value.as_str()));
+                                                        obj_to_save.put(new_element);
+                                                    }
+                                                }
+                                                }
+                                                // Update tags for event emission
+                                                tags = Some(modified_tags);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to receive modified tags from channel: {:?}", e);
+                                            }
+                                        }
+                                    } else {
+                                        warn!("on_before_store callback set but no tags were extracted");
+                                    }
+                                } else {
+                                    info!("No on_before_store callback set");
+                                }                                let obj_for_file = obj_to_save.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
-                                file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                if store_with_file_meta {
+                                    // Write complete DICOM file with file meta header
+                                    file_obj.write_all(&mut dicom_bytes).whatever_context("could not serialize DICOM object")?;
+                                } else {
+                                    // Write dataset-only (more efficient, standard for PACS)
+                                    file_obj.write_dataset_with_ts(&mut dicom_bytes, TransferSyntaxRegistry.get(ts).unwrap()).whatever_context("could not serialize DICOM object")?;
+                                }
                                 let storage_key = file_path.strip_prefix(std::path::Path::new(out_dir.as_ref().unwrap()))
                                     .unwrap_or(&file_path)
                                     .to_string_lossy()
@@ -298,45 +543,80 @@ pub async fn run_store_async(
                                     crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
                                 };
 
-                                // Extract additional metadata
-                                let (clinical_data, mut series, instance) = extract_additional_metadata(
-                                    &obj,
-                                    sop_instance_uid.clone(),
-                                    file_path_str.clone(),
-                                    series_instance_uid.clone(),
-                                );
 
+                                // Emit the OnFileStored event with flat tags
+                                on_file_stored(ScpEventDetails {
+                                    file: Some(file_path_str.clone()),
+                                    sop_instance_uid: Some(sop_instance_uid.clone()),
+                                    sop_class_uid: Some(sop_class_uid.clone()),
+                                    transfer_syntax_uid: Some(transfer_syntax_uid.clone()),
+                                    study_instance_uid: Some(study_instance_uid.clone()),
+                                    series_instance_uid: Some(series_instance_uid.clone()),
+                                    tags,
+                                    error: None,
+                                    study: None,
+                                });
 
-                                // Emit the OnFileStored event
-                                on_file_stored(
-                                    serde_json::json!({
-                                        "sop_class-uid": sop_class_uid.clone(),
-                                        "sop_instance_uid": sop_instance_uid.clone(),
-                                        "transfer_syntax_uid": transfer_syntax_uid.clone(),
-                                        "study_instance_uid": study_instance_uid.clone(),
-                                        "series_instance_uid": series.series_instance_uid,
-                                        "series_number": series.series_number,
-                                        "instance": instance
-                                    })
-                                );
-
-                                // Update global store
+                                // Update global study store with hierarchy
+                                // Extract tags at each hierarchy level (study, series, instance)
                                 {
                                     let mut store = STUDY_STORE.lock().await;
-                                    let study = store.entry(study_instance_uid.clone()).or_insert_with(|| Study {
+                                    
+                                    // Extract tags by hierarchy level for organized structure
+                                    let study_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
+                                        let tags = extract_at_hierarchy_level(
+                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Study
+                                        );
+                                        if tags.is_empty() { None } else { Some(tags) }
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    let series_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
+                                        let tags = extract_at_hierarchy_level(
+                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Series
+                                        );
+                                        if tags.is_empty() { None } else { Some(tags) }
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    let instance_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
+                                        let tags = extract_at_hierarchy_level(
+                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Instance
+                                        );
+                                        if tags.is_empty() { None } else { Some(tags) }
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    let study = store.entry(study_instance_uid.clone()).or_insert_with(|| StudyHierarchy {
                                         study_instance_uid: study_instance_uid.clone(),
-                                        clinical_data: clinical_data.clone(),
+                                        tags: study_tags.clone(),
                                         series: Vec::new(),
                                     });
 
-                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series.series_instance_uid);
+                                    let series_entry = study.series.iter_mut().find(|s| s.series_instance_uid == series_instance_uid);
+                                    let instance_hierarchy = InstanceHierarchy {
+                                        sop_instance_uid: sop_instance_uid.clone(),
+                                        sop_class_uid: sop_class_uid.clone(),
+                                        transfer_syntax_uid: transfer_syntax_uid.clone(),
+                                        file: file_path_str.clone(),
+                                        tags: instance_tags.clone(),
+                                    };
+                                    
                                     if let Some(series_entry) = series_entry {
-                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == instance.sop_instance_uid) {
-                                            series_entry.instances.push(instance);
+                                        if !series_entry.instances.iter().any(|i| i.sop_instance_uid == sop_instance_uid) {
+                                            series_entry.instances.push(instance_hierarchy);
                                         }
                                     } else {
-                                        series.instances.push(instance);
-                                        study.series.push(series);
+                                        let mut new_series = SeriesHierarchy {
+                                            series_instance_uid: series_instance_uid.clone(),
+                                            tags: series_tags.clone(),
+                                            instances: Vec::new(),
+                                        };
+                                        new_series.instances.push(instance_hierarchy);
+                                        study.series.push(new_series);
                                     }
                                 }
 
@@ -351,8 +631,33 @@ pub async fn run_store_async(
                                             let mut store = STUDY_STORE.lock().await;
                                             if let Some(study) = store.remove(&study_instance_uid_clone) {
                                                 let on_study_completed = on_study_completed_clone.lock().await;
-                                                let study_data = serde_json::json!(study);
-                                                on_study_completed(study_data);
+                                                
+                                                // Convert StudyHierarchy to StudyHierarchyData
+                                                let series_data: Vec<SeriesHierarchyData> = study.series.into_iter().map(|s| {
+                                                    let instances_data: Vec<InstanceHierarchyData> = s.instances.into_iter().map(|i| {
+                                                        InstanceHierarchyData {
+                                                            sop_instance_uid: i.sop_instance_uid,
+                                                            sop_class_uid: i.sop_class_uid,
+                                                            transfer_syntax_uid: i.transfer_syntax_uid,
+                                                            file: i.file,
+                                                            tags: i.tags,
+                                                        }
+                                                    }).collect();
+                                                    
+                                                    SeriesHierarchyData {
+                                                        series_instance_uid: s.series_instance_uid,
+                                                        tags: s.tags,
+                                                        instances: instances_data,
+                                                    }
+                                                }).collect();
+                                                
+                                                let study_hierarchy_data = StudyHierarchyData {
+                                                    study_instance_uid: study.study_instance_uid,
+                                                    tags: study.tags,
+                                                    series: series_data,
+                                                };
+                                                
+                                                on_study_completed(study_hierarchy_data);
                                             }
                                         });
                                     }
@@ -410,7 +715,7 @@ pub async fn run_store_async(
                     _ => {}
                 }
             }
-            Err(err) => {
+            Err(err @ dicom_ul::association::Error::ReceivePdu { .. }) => {
                 if verbose {
                     info!("{}", Report::from_error(err));
                 } else {
@@ -418,131 +723,19 @@ pub async fn run_store_async(
                 }
                 break;
             }
+            Err(err) => {
+                warn!("Unexpected error: {}", Report::from_error(err));
+                break;
+            }
         }
-    }
-
-    if let Ok(peer_addr) = association.inner_stream().peer_addr() {
-        info!(
-            "Dropping connection with {} ({})",
-            association.client_ae_title(),
-            peer_addr
-        );
-    } else {
-        info!("Dropping connection with {}", association.client_ae_title());
     }
 
     Ok(())
 }
 
-/**
- * Helper functions to extract DICOM tags as strings or integers.
- */
-fn get_str_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> String {
-    obj.element(tag)
-        .ok()
-        .and_then(|e| e.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_default()
-}
 
-fn get_int_tag(obj: &InMemDicomObject<StandardDataDictionary>, tag: Tag) -> i64 {
-    obj.element(tag)
-        .ok()
-        .and_then(|e| e.to_int().ok())
-        .unwrap_or(0)
-}
 
-fn extract_additional_metadata(
-    obj: &InMemDicomObject<StandardDataDictionary>,
-    sop_instance_uid: String,
-    file_path: String,
-    series_instance_uid: String,
-) -> (ClinicalData, Series, Instance) {
-    let clinical_data = ClinicalData {
-        patient_name: get_str_tag(obj, tags::PATIENT_NAME),
-        patient_id: get_str_tag(obj, tags::PATIENT_ID),
-        patient_birth_date: get_str_tag(obj, tags::PATIENT_BIRTH_DATE),
-        patient_sex: get_str_tag(obj, tags::PATIENT_SEX),
-    };
 
-    let instance = Instance {
-        sop_instance_uid: sop_instance_uid.clone(),
-        instance_number: get_int_tag(obj, tags::INSTANCE_NUMBER),
-        file_path,
-        rows: get_int_tag(obj, tags::ROWS),
-        columns: get_int_tag(obj, tags::COLUMNS),
-        bits_allocated: get_int_tag(obj, tags::BITS_ALLOCATED),
-        bits_stored: get_int_tag(obj, tags::BITS_STORED),
-        high_bit: get_int_tag(obj, tags::HIGH_BIT),
-        pixel_representation: get_int_tag(obj, tags::PIXEL_REPRESENTATION),
-        photometric_interpretation: get_str_tag(obj, tags::PHOTOMETRIC_INTERPRETATION),
-        planar_configuration: get_int_tag(obj, tags::PLANAR_CONFIGURATION),
-        pixel_aspect_ratio: get_str_tag(obj, tags::PIXEL_ASPECT_RATIO),
-        pixel_spacing: get_str_tag(obj, tags::PIXEL_SPACING),
-        lossy_image_compression: get_str_tag(obj, tags::LOSSY_IMAGE_COMPRESSION),
-    };
-
-    let series = Series {
-        series_instance_uid,
-        series_number: get_int_tag(obj, tags::SERIES_NUMBER),
-        body_part_examined: get_str_tag(obj, tags::BODY_PART_EXAMINED),
-        protocol_name: get_str_tag(obj, tags::PROTOCOL_NAME),
-        contrast_bolus_agent: get_str_tag(obj, tags::CONTRAST_BOLUS_AGENT),
-        instances: vec![], // Will be filled later
-    };
-
-    (clinical_data, series, instance)
-}
-
-fn create_cstore_response(
-    message_id: u16,
-    sop_class_uid: &str,
-    sop_instance_uid: &str,
-) -> InMemDicomObject<StandardDataDictionary> {
-    InMemDicomObject::command_from_element_iter([
-        DataElement::new(
-            tags::AFFECTED_SOP_CLASS_UID,
-            VR::UI,
-            dicom_value!(Str, sop_class_uid),
-        ),
-        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8001])),
-
-        DataElement::new(
-            tags::MESSAGE_ID_BEING_RESPONDED_TO,
-            VR::US,
-            dicom_value!(U16, [message_id]),
-        ),
-        DataElement::new(
-            tags::COMMAND_DATA_SET_TYPE,
-            VR::US,
-            dicom_value!(U16, [0x0101]),
-        ),
-        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
-
-        DataElement::new(
-            tags::AFFECTED_SOP_INSTANCE_UID,
-            VR::UI,
-            dicom_value!(Str, sop_instance_uid),
-        ),
-    ])
-}
-
-fn create_cecho_response(message_id: u16) -> InMemDicomObject<StandardDataDictionary> {
-    InMemDicomObject::command_from_element_iter([
-        DataElement::new(tags::COMMAND_FIELD, VR::US, dicom_value!(U16, [0x8030])),
-        DataElement::new(
-            tags::MESSAGE_ID_BEING_RESPONDED_TO,
-            VR::US,
-            dicom_value!(U16, [message_id]),
-        ),
-        DataElement::new(
-            tags::COMMAND_DATA_SET_TYPE,
-            VR::US,
-            dicom_value!(U16, [0x0101]),
-        ),
-        DataElement::new(tags::STATUS, VR::US, dicom_value!(U16, [0x0000])),
-    ])
-}
 
 // StorageBackend trait and implementations for Filesystem and S3
 #[async_trait]
@@ -576,10 +769,13 @@ impl StorageBackend for S3Backend {
         let key = path.replace("\\", "/");
         let bucket = self.bucket.clone();
         let data = data.to_vec();
-        s3_put_object(&bucket, &key, &data).await.map_err(|e| {
-            error!("Failed to upload file to S3: {}", e);
-            Box::<dyn std::error::Error>::from(e)
-        })?;
-        Ok(())
+        let s3_result = s3_put_object(&bucket, &key, &data).await;
+        match s3_result {
+            Ok(()) => Ok(()),
+            Err(_e) => {
+                error!("Failed to upload file to S3: {}", key);
+                Err(format!("S3 upload failed: {}", key).into())
+            }
+        }
     }
 }
