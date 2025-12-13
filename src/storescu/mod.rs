@@ -34,26 +34,20 @@ mod store_async;
  * const scu = new StoreScu({ addr: 'MY-SCP@192.168.1.100:11112' });
  * scu.addFile('image.dcm');
  * 
- * scu.addEventListener('OnTransferStarted', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Starting transfer of ${info.totalFiles} files`);
+ * await scu.send({
+ *   onTransferStarted: (err, event) => {
+ *     console.log(`Starting transfer of ${event.data?.totalFiles} files`);
+ *   },
+ *   onFileSending: (err, event) => {
+ *     console.log(`Sending: ${event.data?.file}`);
+ *   },
+ *   onFileSent: (err, event) => {
+ *     console.log(`✓ Sent: ${event.data?.sopInstanceUid}`);
+ *   },
+ *   onTransferCompleted: (err, event) => {
+ *     console.log('All files transferred successfully');
+ *   }
  * });
- * 
- * scu.addEventListener('OnFileSending', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Sending: ${info.file}`);
- * });
- * 
- * scu.addEventListener('OnFileSent', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`✓ Sent: ${info.sopInstanceUid}`);
- * });
- * 
- * scu.addEventListener('OnTransferCompleted', (data) => {
- *   console.log('All files transferred successfully');
- * });
- * 
- * await scu.send();
  * ```
  */
 #[napi(string_enum)]
@@ -225,18 +219,15 @@ enum FileSource {
  * scu.addFile('/path/to/image2.dcm');
  * scu.addFolder('/path/to/study/'); // Recursively adds all DICOM files
  * 
- * // Monitor progress
- * scu.addEventListener('OnFileSending', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Sending: ${info.file}`);
+ * // Send with progress monitoring
+ * const results = await scu.send({
+ *   onFileSending: (err, event) => {
+ *     console.log(`Sending: ${event.data?.file}`);
+ *   },
+ *   onFileSent: (err, event) => {
+ *     console.log('File sent successfully');
+ *   }
  * });
- * 
- * scu.addEventListener('OnFileSent', (data) => {
- *   console.log('File sent successfully');
- * });
- * 
- * // Send all files
- * const results = await scu.send();
  * console.log('Transfer complete:', results);
  * ```
  * 

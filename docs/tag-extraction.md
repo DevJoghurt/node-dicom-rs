@@ -143,17 +143,19 @@ console.log('Decay Correction:', petData.DecayCorrection);
 Extract tags from DICOM files stored in S3:
 
 ```typescript
-const file = new DicomFile();
-
-// Open S3 file
-file.openS3({
-    bucket: 'dicom-archive',
-    key: 'studies/2024/CT-12345.dcm',
-    accessKey: 'YOUR_KEY',
-    secretKey: 'YOUR_SECRET',
-    endpoint: 'https://s3.amazonaws.com',
-    region: 'us-east-1'
+const file = new DicomFile({
+    backend: 'S3',
+    s3Config: {
+        bucket: 'dicom-archive',
+        accessKey: 'YOUR_KEY',
+        secretKey: 'YOUR_SECRET',
+        endpoint: 'https://s3.amazonaws.com',
+        region: 'us-east-1'
+    }
 });
+
+// Open S3 file (path is relative to bucket)
+await file.open('studies/2024/CT-12345.dcm');
 
 // Extract tags (same API as local files)
 const data = file.extract(tagSets.default);

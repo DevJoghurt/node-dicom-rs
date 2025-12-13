@@ -305,41 +305,69 @@ impl DicomFile {
      * 
      * Reads the entire DICOM dataset and makes it available for operations like
      * `extract()`, `saveRawPixelData()`, and `dump()`. Any previously opened file
-     * is automatically closed. Automatically uses S3 or filesystem based on configuration.
+     * is automatically closed. 
      * 
-     * @param path - Path to the DICOM file (filesystem path or S3 key)
+     * **Storage Backend:** Automatically uses S3 or filesystem based on the
+     * `StorageConfig` provided in the constructor. The same `open()` method works
+     * for both backends.
+     * 
+     * **File Format:** Handles DICOM files both with and without file meta header.
+     * Files with meta header (standard .dcm files) and dataset-only files are both supported.
+     * 
+     * @param path - Path to the DICOM file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
      * @returns Success message if the file was opened successfully
      * @throws Error if the file cannot be opened or is not a valid DICOM file
      * 
      * @example
      * ```typescript
-     * // Filesystem
+     * // Filesystem backend (default)
      * const file1 = new DicomFile();
      * await file1.open('/path/to/file.dcm');
      * 
-     * // S3
-     * const file2 = new DicomFile({ backend: 'S3', s3Config: {...} });
-     * await file2.open('folder/file.dcm'); // Reads from S3 bucket
+     * // Filesystem with root directory
+     * const file2 = new DicomFile({ 
+     *   backend: 'Filesystem', 
+     *   rootDir: '/data/dicom' 
+     * });
+     * await file2.open('subfolder/file.dcm'); // Resolves to /data/dicom/subfolder/file.dcm
+     * 
+     * // S3 backend - same open() method, different config
+     * const file3 = new DicomFile({ 
+     *   backend: 'S3', 
+     *   s3Config: {
+     *     bucket: 'my-dicom-bucket',
+     *     accessKey: 'ACCESS_KEY',
+     *     secretKey: 'SECRET_KEY'
+     *   }
+     * });
+     * await file3.open('folder/file.dcm'); // Reads from S3 bucket
      * ```
      */
     #[napi]
     pub async fn open(&self, path: String) -> napi::Result<String> {
+        use dicom_object::OpenFileOptions;
+        use dicom_object::file::ReadPreamble;
+        
         match self.storage_config.backend {
             StorageBackend::S3 => {
                 // Read from S3
                 let data = self.read_from_s3(&path).await?;
                 
-                // Parse DICOM from bytes
-                let dicom_file = dicom_object::from_reader(&data[..])
+                // Parse DICOM from bytes with auto-detection of preamble
+                let dicom_file = OpenFileOptions::new()
+                    .read_preamble(ReadPreamble::Auto)
+                    .from_reader(&data[..])
                     .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM from S3: {}", e)))?;
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
                 Ok(format!("File opened successfully from S3: {}", path))
             },
             StorageBackend::Filesystem => {
-                // Read from filesystem
+                // Read from filesystem with auto-detection of preamble
                 let resolved_path = self.resolve_path(&path);
-                let dicom_file = open_file(&resolved_path)
+                let dicom_file = OpenFileOptions::new()
+                    .read_preamble(ReadPreamble::Auto)
+                    .open_file(&resolved_path)
                     .map_err(|e| napi::Error::from_reason(format!("Failed to open DICOM file: {}", e)))?;
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
@@ -353,17 +381,25 @@ impl DicomFile {
      * 
      * Reads a DICOM file in JSON format (as specified by DICOM Part 18) and converts it
      * to an internal DICOM object representation. After opening, all standard operations
-     * like `extract()`, `dump()`, and `saveAsDicom()` are available. Automatically uses S3 or filesystem.
+     * like `extract()`, `dump()`, and `saveAsDicom()` are available.
      * 
-     * @param path - Path to the DICOM JSON file (filesystem path or S3 key)
+     * **Storage Backend:** Automatically uses S3 or filesystem based on the
+     * `StorageConfig` provided in the constructor.
+     * 
+     * @param path - Path to the DICOM JSON file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
      * @returns Success message if the file was opened successfully
      * @throws Error if the file cannot be opened or is not valid DICOM JSON
      * 
      * @example
      * ```typescript
+     * // Filesystem
      * const file = new DicomFile();
      * await file.openJson('/path/to/file.json');
      * const data = file.extract(['PatientName', 'StudyDate']);
+     * 
+     * // S3 backend
+     * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+     * await fileS3.openJson('folder/file.json');
      * ```
      */
     #[napi]
@@ -1020,18 +1056,27 @@ impl DicomFile {
      * Save the currently opened DICOM file as JSON format.
      * 
      * Converts the DICOM object to JSON representation according to DICOM Part 18
-     * standard and saves it to the specified path. Automatically uses S3 or filesystem.
+     * standard and saves it to the specified path.
      * 
-     * @param path - Output path for the JSON file (filesystem path or S3 key)
+     * **Storage Backend:** Automatically uses S3 or filesystem based on the
+     * `StorageConfig` provided in the constructor.
+     * 
+     * @param path - Output path for the JSON file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
      * @param pretty - Pretty print the JSON (default: true)
      * @returns Success message with file size
      * @throws Error if no file is opened or JSON conversion fails
      * 
      * @example
      * ```typescript
+     * // Filesystem
      * const file = new DicomFile();
      * await file.open('image.dcm');
      * await file.saveAsJson('output.json', true);
+     * 
+     * // S3 backend
+     * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+     * await fileS3.open('input.dcm');
+     * await fileS3.saveAsJson('output.json', true); // Saves to S3
      * ```
      */
     #[napi]
@@ -1055,17 +1100,31 @@ impl DicomFile {
      * Save the currently opened DICOM file (regardless of original format) as standard DICOM.
      * 
      * Writes the DICOM object as a standard .dcm file with proper file meta information.
-     * Useful for converting DICOM JSON back to binary DICOM format. Automatically uses S3 or filesystem.
+     * Useful for converting DICOM JSON back to binary DICOM format, or saving modified files.
      * 
-     * @param path - Output path for the DICOM file (filesystem path or S3 key)
+     * **Storage Backend:** Automatically uses S3 or filesystem based on the
+     * `StorageConfig` provided in the constructor.
+     * 
+     * @param path - Output path for the DICOM file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
      * @returns Success message
      * @throws Error if no file is opened or write fails
      * 
      * @example
      * ```typescript
+     * // Convert JSON to DICOM (filesystem)
      * const file = new DicomFile();
      * await file.openJson('input.json');
      * await file.saveAsDicom('output.dcm');
+     * 
+     * // Modify and save DICOM file
+     * await file.open('original.dcm');
+     * file.updateTags({ PatientName: 'ANONYMOUS' });
+     * await file.saveAsDicom('anonymized.dcm');
+     * 
+     * // S3 backend
+     * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+     * await fileS3.openJson('input.json');
+     * await fileS3.saveAsDicom('output.dcm'); // Saves to S3
      * ```
      */
     #[napi]

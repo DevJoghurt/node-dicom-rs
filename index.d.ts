@@ -53,21 +53,42 @@ export declare class DicomFile {
    *
    * Reads the entire DICOM dataset and makes it available for operations like
    * `extract()`, `saveRawPixelData()`, and `dump()`. Any previously opened file
-   * is automatically closed. Automatically uses S3 or filesystem based on configuration.
+   * is automatically closed.
    *
-   * @param path - Path to the DICOM file (filesystem path or S3 key)
+   * **Storage Backend:** Automatically uses S3 or filesystem based on the
+   * `StorageConfig` provided in the constructor. The same `open()` method works
+   * for both backends.
+   *
+   * **File Format:** Handles DICOM files both with and without file meta header.
+   * Files with meta header (standard .dcm files) and dataset-only files are both supported.
+   *
+   * @param path - Path to the DICOM file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
    * @returns Success message if the file was opened successfully
    * @throws Error if the file cannot be opened or is not a valid DICOM file
    *
    * @example
    * ```typescript
-   * // Filesystem
+   * // Filesystem backend (default)
    * const file1 = new DicomFile();
    * await file1.open('/path/to/file.dcm');
    *
-   * // S3
-   * const file2 = new DicomFile({ backend: 'S3', s3Config: {...} });
-   * await file2.open('folder/file.dcm'); // Reads from S3 bucket
+   * // Filesystem with root directory
+   * const file2 = new DicomFile({
+   *   backend: 'Filesystem',
+   *   rootDir: '/data/dicom'
+   * });
+   * await file2.open('subfolder/file.dcm'); // Resolves to /data/dicom/subfolder/file.dcm
+   *
+   * // S3 backend - same open() method, different config
+   * const file3 = new DicomFile({
+   *   backend: 'S3',
+   *   s3Config: {
+   *     bucket: 'my-dicom-bucket',
+   *     accessKey: 'ACCESS_KEY',
+   *     secretKey: 'SECRET_KEY'
+   *   }
+   * });
+   * await file3.open('folder/file.dcm'); // Reads from S3 bucket
    * ```
    */
   open(path: string): Promise<string>
@@ -75,17 +96,25 @@ export declare class DicomFile {
    *
    * Reads a DICOM file in JSON format (as specified by DICOM Part 18) and converts it
    * to an internal DICOM object representation. After opening, all standard operations
-   * like `extract()`, `dump()`, and `saveAsDicom()` are available. Automatically uses S3 or filesystem.
+   * like `extract()`, `dump()`, and `saveAsDicom()` are available.
    *
-   * @param path - Path to the DICOM JSON file (filesystem path or S3 key)
+   * **Storage Backend:** Automatically uses S3 or filesystem based on the
+   * `StorageConfig` provided in the constructor.
+   *
+   * @param path - Path to the DICOM JSON file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
    * @returns Success message if the file was opened successfully
    * @throws Error if the file cannot be opened or is not valid DICOM JSON
    *
    * @example
    * ```typescript
+   * // Filesystem
    * const file = new DicomFile();
    * await file.openJson('/path/to/file.json');
    * const data = file.extract(['PatientName', 'StudyDate']);
+   *
+   * // S3 backend
+   * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+   * await fileS3.openJson('folder/file.json');
    * ```
    */
   openJson(path: string): Promise<string>
@@ -296,35 +325,58 @@ export declare class DicomFile {
   /** * Save the currently opened DICOM file as JSON format.
    *
    * Converts the DICOM object to JSON representation according to DICOM Part 18
-   * standard and saves it to the specified path. Automatically uses S3 or filesystem.
+   * standard and saves it to the specified path.
    *
-   * @param path - Output path for the JSON file (filesystem path or S3 key)
+   * **Storage Backend:** Automatically uses S3 or filesystem based on the
+   * `StorageConfig` provided in the constructor.
+   *
+   * @param path - Output path for the JSON file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
    * @param pretty - Pretty print the JSON (default: true)
    * @returns Success message with file size
    * @throws Error if no file is opened or JSON conversion fails
    *
    * @example
    * ```typescript
+   * // Filesystem
    * const file = new DicomFile();
    * await file.open('image.dcm');
    * await file.saveAsJson('output.json', true);
+   *
+   * // S3 backend
+   * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+   * await fileS3.open('input.dcm');
+   * await fileS3.saveAsJson('output.json', true); // Saves to S3
    * ```
    */
   saveAsJson(path: string, pretty?: boolean | undefined | null): Promise<string>
   /** * Save the currently opened DICOM file (regardless of original format) as standard DICOM.
    *
    * Writes the DICOM object as a standard .dcm file with proper file meta information.
-   * Useful for converting DICOM JSON back to binary DICOM format. Automatically uses S3 or filesystem.
+   * Useful for converting DICOM JSON back to binary DICOM format, or saving modified files.
    *
-   * @param path - Output path for the DICOM file (filesystem path or S3 key)
+   * **Storage Backend:** Automatically uses S3 or filesystem based on the
+   * `StorageConfig` provided in the constructor.
+   *
+   * @param path - Output path for the DICOM file (filesystem path when using Filesystem backend, or S3 key when using S3 backend)
    * @returns Success message
    * @throws Error if no file is opened or write fails
    *
    * @example
    * ```typescript
+   * // Convert JSON to DICOM (filesystem)
    * const file = new DicomFile();
    * await file.openJson('input.json');
    * await file.saveAsDicom('output.dcm');
+   *
+   * // Modify and save DICOM file
+   * await file.open('original.dcm');
+   * file.updateTags({ PatientName: 'ANONYMOUS' });
+   * await file.saveAsDicom('anonymized.dcm');
+   *
+   * // S3 backend
+   * const fileS3 = new DicomFile({ backend: 'S3', s3Config: {...} });
+   * await fileS3.openJson('input.json');
+   * await fileS3.saveAsDicom('output.dcm'); // Saves to S3
    * ```
    */
   saveAsDicom(path: string): Promise<string>
@@ -596,6 +648,92 @@ export declare class StoreScp {
   /** * Register callback for error events
    */
   onError(handler: ((err: Error | null, arg: ScpEventData) => void)): void
+  /** * Register a callback to modify DICOM tags before files are saved.
+   *
+   * This callback is invoked **synchronously** for each received DICOM file, allowing you
+   * to modify tags before the file is written to disk. The callback receives the extracted
+   * tags as a plain object and must return a modified tags object.
+   *
+   * **Important:**
+   * - You must configure `extractTags` to specify which tags should be extracted
+   * - Only tags specified in `extractTags` will be available to modify
+   * - The callback blocks file storage, so keep operations fast
+   * - Tags are passed and returned as `Record<string, string>` (key-value pairs)
+   * - Must call this method BEFORE `listen()`
+   *
+   * **Common Use Cases:**
+   * - **Anonymization**: Remove or replace patient-identifying information
+   * - **Tag Enrichment**: Add institution-specific metadata
+   * - **Validation**: Verify required tags are present (throw error to reject file)
+   * - **Normalization**: Standardize tag formats across different sources
+   *
+   * @param callback - Synchronous function that receives tags and returns modified tags
+   *
+   * @example
+   * ```typescript
+   * // Anonymization with patient ID mapping
+   * const scp = new StoreScp({
+   *   port: 11115,
+   *   outDir: './anonymized',
+   *   storeWithFileMeta: true, // Important for re-reading files
+   *   extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
+   * });
+   *
+   * const patientMapping = new Map();
+   * let anonCounter = 1000;
+   *
+   * scp.onBeforeStore((tags) => {
+   *   // Get or create anonymous ID
+   *   let anonId = patientMapping.get(tags.PatientID);
+   *   if (!anonId) {
+   *     anonId = `ANON_${anonCounter++}`;
+   *     patientMapping.set(tags.PatientID, anonId);
+   *   }
+   *
+   *   return {
+   *     ...tags,
+   *     PatientName: 'ANONYMOUS^PATIENT',
+   *     PatientID: anonId,
+   *     PatientBirthDate: '',
+   *     StudyDescription: tags.StudyDescription
+   *       ? `ANONYMIZED - ${tags.StudyDescription}`
+   *       : 'ANONYMIZED STUDY'
+   *   };
+   * });
+   *
+   * await scp.listen();
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Validation example
+   * scp.onBeforeStore((tags) => {
+   *   if (!tags.PatientID || !tags.StudyInstanceUID) {
+   *     throw new Error('Missing required patient or study identifiers');
+   *   }
+   *
+   *   if (!/^\d+$/.test(tags.PatientID)) {
+   *     throw new Error('Invalid PatientID format - must be numeric');
+   *   }
+   *
+   *   return tags; // No modifications, just validation
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Tag normalization
+   * scp.onBeforeStore((tags) => {
+   *   return {
+   *     ...tags,
+   *     PatientName: tags.PatientName?.toUpperCase() || '',
+   *     PatientSex: tags.PatientSex?.toUpperCase() || 'O', // Default to 'Other'
+   *     StudyDescription: tags.StudyDescription?.trim() || 'UNKNOWN'
+   *   };
+   * });
+   * ```
+   */
+  onBeforeStore(callback: (tags: Record<string, string>) => Record<string, string>): void
 }
 
 /** * DICOM C-STORE SCU (Service Class User) Client.
@@ -631,18 +769,15 @@ export declare class StoreScp {
  * scu.addFile('/path/to/image2.dcm');
  * scu.addFolder('/path/to/study/'); // Recursively adds all DICOM files
  *
- * // Monitor progress
- * scu.addEventListener('OnFileSending', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Sending: ${info.file}`);
+ * // Send with progress monitoring
+ * const results = await scu.send({
+ *   onFileSending: (err, event) => {
+ *     console.log(`Sending: ${event.data?.file}`);
+ *   },
+ *   onFileSent: (err, event) => {
+ *     console.log('File sent successfully');
+ *   }
  * });
- *
- * scu.addEventListener('OnFileSent', (data) => {
- *   console.log('File sent successfully');
- * });
- *
- * // Send all files
- * const results = await scu.send();
  * console.log('Transfer complete:', results);
  * ```
  *
@@ -1715,18 +1850,20 @@ export interface StorageConfig {
  * ```typescript
  * const scp = new StoreScp({ port: 11111 });
  *
- * scp.addEventListener('OnServerStarted', (data) => {
+ * scp.onServerStarted((data) => {
  *   console.log('Server started:', data.message);
  * });
  *
- * scp.addEventListener('OnFileStored', (data) => {
- *   const fileInfo = JSON.parse(data.data!);
- *   console.log('File stored:', fileInfo.sopInstanceUid);
+ * scp.onFileStored((data) => {
+ *   if (data.data) {
+ *     console.log('File stored:', data.data.sopInstanceUid);
+ *   }
  * });
  *
- * scp.addEventListener('OnStudyCompleted', (data) => {
- *   const studyInfo = JSON.parse(data.data!);
- *   console.log('Study completed:', studyInfo);
+ * scp.onStudyCompleted((data) => {
+ *   if (data.data?.study) {
+ *     console.log('Study completed:', data.data.study.studyInstanceUid);
+ *   }
  * });
  * ```
  */
@@ -1823,26 +1960,20 @@ export interface StoreScpOptions {
  * const scu = new StoreScu({ addr: 'MY-SCP@192.168.1.100:11112' });
  * scu.addFile('image.dcm');
  *
- * scu.addEventListener('OnTransferStarted', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Starting transfer of ${info.totalFiles} files`);
+ * await scu.send({
+ *   onTransferStarted: (err, event) => {
+ *     console.log(`Starting transfer of ${event.data?.totalFiles} files`);
+ *   },
+ *   onFileSending: (err, event) => {
+ *     console.log(`Sending: ${event.data?.file}`);
+ *   },
+ *   onFileSent: (err, event) => {
+ *     console.log(`✓ Sent: ${event.data?.sopInstanceUid}`);
+ *   },
+ *   onTransferCompleted: (err, event) => {
+ *     console.log('All files transferred successfully');
+ *   }
  * });
- *
- * scu.addEventListener('OnFileSending', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`Sending: ${info.file}`);
- * });
- *
- * scu.addEventListener('OnFileSent', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log(`✓ Sent: ${info.sopInstanceUid}`);
- * });
- *
- * scu.addEventListener('OnTransferCompleted', (data) => {
- *   console.log('All files transferred successfully');
- * });
- *
- * await scu.send();
  * ```
  */
 export declare const enum StoreScuEvent {

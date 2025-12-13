@@ -3,6 +3,7 @@
 
 __test__/fixtures/
 playground/testdata
+playground/test-*
 
 ### Node ###
 # Logs

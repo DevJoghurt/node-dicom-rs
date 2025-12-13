@@ -7,6 +7,7 @@ use dicom_dictionary_std::tags;
 use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
 use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
+use dicom_core::{dicom_value, DataElement, VR};
 use dicom_ul::{
     association::ServerAssociation,
     pdu::{PDataValueType, PresentationContextResultReason},
@@ -164,6 +165,7 @@ pub async fn run_store_async(
         abstract_syntaxes,
         transfer_syntax_mode,
         transfer_syntaxes,
+        on_before_store,
     } = args;
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
@@ -253,6 +255,7 @@ pub async fn run_store_async(
         args,
         extract_tags,
         extract_custom_tags,
+        on_before_store,
         on_file_stored,
         on_study_completed,
     )
@@ -282,6 +285,7 @@ async fn inner(
     args: &StoreScp,
     extract_tags: &[String],
     extract_custom_tags: &[CustomTag],
+    on_before_store: &Option<Arc<napi::threadsafe_function::ThreadsafeFunction<std::collections::HashMap<String, String>, std::collections::HashMap<String, String>>>>,
     on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
     on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever>
@@ -448,7 +452,77 @@ async fn inner(
                                 file_path.push(series_instance_uid.to_string());
                                 file_path.push(sop_instance_uid.trim_end_matches('\0').to_string() + ".dcm");
 
-                                let obj_for_file = obj.clone();
+                                // Extract metadata as flat tags BEFORE saving
+                                let mut tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
+                                    Some(extract_tags_flat(&obj, extract_tags, extract_custom_tags))
+                                } else {
+                                    None
+                                };
+
+                                // Call on_before_store callback if provided
+                                // This allows modification of tags before saving (e.g., anonymization)
+                                let mut obj_to_save = obj.clone();
+                                if let Some(callback_arc) = on_before_store {
+                                    info!("on_before_store callback is set");
+                                    if let Some(ref extracted_tags) = tags {
+                                        info!("Extracted tags available, calling callback with {} tags", extracted_tags.len());
+                                        // Call the callback - using Blocking mode to wait for JS to complete
+                                        use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+                                        
+                                        // Create a channel to receive the modified tags
+                                        let (tx, rx) = tokio::sync::oneshot::channel();
+                                        
+                                        // Call the JS callback
+                                        let status = callback_arc.call_with_return_value(
+                                            Ok(extracted_tags.clone()),
+                                            ThreadsafeFunctionCallMode::Blocking,
+                                            move |result: Result<HashMap<String, String>, _>, _env| {
+                                                info!("Callback closure executed");
+                                                if let Ok(modified_tags) = result {
+                                                    info!("Received modified tags: {} entries", modified_tags.len());
+                                                    let _ = tx.send(modified_tags);
+                                                } else {
+                                                    error!("Callback returned error: {:?}", result);
+                                                }
+                                                Ok(())
+                                            }
+                                        );
+                                        info!("call_with_return_value status: {:?}", status);
+                                        
+                                        // Wait for the callback to complete
+                                        match rx.await {
+                                            Ok(modified_tags) => {
+                                                info!("Successfully received modified tags");
+                                                // Update the DICOM object with modified tags
+                                                // Only update tags that were in the original extracted set
+                                                for (tag_name, new_value) in &modified_tags {
+                                                    if extracted_tags.contains_key(tag_name) {
+                                                    // Parse the tag name and update the object
+                                                    if let Ok(tag) = crate::utils::parse_tag(tag_name) {
+                                                        // Get VR from existing element or default to LO
+                                                        let vr = obj_to_save.element(tag)
+                                                            .map(|e| e.vr())
+                                                            .unwrap_or(VR::LO);
+                                                        
+                                                        // Create new element with updated value
+                                                        let new_element = DataElement::new(tag, vr, dicom_value!(Str, new_value.as_str()));
+                                                        obj_to_save.put(new_element);
+                                                    }
+                                                }
+                                                }
+                                                // Update tags for event emission
+                                                tags = Some(modified_tags);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to receive modified tags from channel: {:?}", e);
+                                            }
+                                        }
+                                    } else {
+                                        warn!("on_before_store callback set but no tags were extracted");
+                                    }
+                                } else {
+                                    info!("No on_before_store callback set");
+                                }                                let obj_for_file = obj_to_save.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
                                 if store_with_file_meta {
@@ -469,12 +543,6 @@ async fn inner(
                                     crate::storescp::StorageBackendType::S3 => format!("s3://{}/{}", args.s3_config.as_ref().unwrap().bucket, storage_key),
                                 };
 
-                                // Extract metadata as flat tags
-                                let tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
-                                    Some(extract_tags_flat(&obj, extract_tags, extract_custom_tags))
-                                } else {
-                                    None
-                                };
 
                                 // Emit the OnFileStored event with flat tags
                                 on_file_stored(ScpEventDetails {

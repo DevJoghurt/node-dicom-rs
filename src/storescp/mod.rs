@@ -136,6 +136,8 @@ pub struct StoreScp {
     transfer_syntax_mode: TransferSyntaxMode,
     /// Custom transfer syntaxes
     transfer_syntaxes: Vec<String>,
+    /// Callback for modifying tags before storage (synchronous)
+    on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
 }
 
 
@@ -148,18 +150,20 @@ pub struct StoreScp {
  * ```typescript
  * const scp = new StoreScp({ port: 11111 });
  * 
- * scp.addEventListener('OnServerStarted', (data) => {
+ * scp.onServerStarted((data) => {
  *   console.log('Server started:', data.message);
  * });
  * 
- * scp.addEventListener('OnFileStored', (data) => {
- *   const fileInfo = JSON.parse(data.data!);
- *   console.log('File stored:', fileInfo.sopInstanceUid);
+ * scp.onFileStored((data) => {
+ *   if (data.data) {
+ *     console.log('File stored:', data.data.sopInstanceUid);
+ *   }
  * });
  * 
- * scp.addEventListener('OnStudyCompleted', (data) => {
- *   const studyInfo = JSON.parse(data.data!);
- *   console.log('Study completed:', studyInfo);
+ * scp.onStudyCompleted((data) => {
+ *   if (data.data?.study) {
+ *     console.log('Study completed:', data.data.study.studyInstanceUid);
+ *   }
  * });
  * ```
  */
@@ -265,6 +269,7 @@ pub struct StoreScpServer  {
     abstract_syntaxes: Vec<String>,
     transfer_syntax_mode: TransferSyntaxMode,
     transfer_syntaxes: Vec<String>,
+    on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
 }
 
 #[napi]
@@ -291,6 +296,7 @@ impl napi::Task for StoreScpServer {
       abstract_syntaxes: self.abstract_syntaxes.clone(),
       transfer_syntax_mode: self.transfer_syntax_mode.clone(),
       transfer_syntaxes: self.transfer_syntaxes.clone(),
+      on_before_store: self.on_before_store.clone(),
     };
 
     RUNTIME.block_on(async move {
@@ -367,6 +373,7 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
                   abstract_syntaxes: args.abstract_syntaxes.clone(),
                   transfer_syntax_mode: args.transfer_syntax_mode.clone(),
                   transfer_syntaxes: args.transfer_syntaxes.clone(),
+                  on_before_store: args.on_before_store.clone(),
               };
 
               let shutdown_notify = SHUTDOWN_NOTIFY.clone();
@@ -528,18 +535,20 @@ pub struct StoreScpOptions {
  * });
  * 
  * // Listen for events
- * scp.addEventListener('OnServerStarted', (data) => {
+ * scp.onServerStarted((data) => {
  *   console.log('Server started');
  * });
  * 
- * scp.addEventListener('OnFileStored', (data) => {
- *   const info = JSON.parse(data.data!);
- *   console.log('Stored:', info.sopInstanceUid);
+ * scp.onFileStored((data) => {
+ *   if (data.data) {
+ *     console.log('Stored:', data.data.sopInstanceUid);
+ *   }
  * });
  * 
- * scp.addEventListener('OnStudyCompleted', (data) => {
- *   const study = JSON.parse(data.data!);
- *   console.log('Study complete:', study.studyInstanceUid);
+ * scp.onStudyCompleted((data) => {
+ *   if (data.data?.study) {
+ *     console.log('Study complete:', data.data.study.studyInstanceUid);
+ *   }
  * });
  * 
  * // Start listening
@@ -658,6 +667,7 @@ impl StoreScp {
             abstract_syntaxes,
             transfer_syntax_mode,
             transfer_syntaxes,
+            on_before_store: None,
         }
     }
 
@@ -739,6 +749,7 @@ impl StoreScp {
           abstract_syntaxes: self.abstract_syntaxes.clone(),
           transfer_syntax_mode: self.transfer_syntax_mode.clone(),
           transfer_syntaxes: self.transfer_syntaxes.clone(),
+          on_before_store: self.on_before_store.clone(),
         })
     }
 
@@ -883,6 +894,97 @@ impl StoreScp {
                 }
             }
         });
+    }
+
+    /**
+     * Register a callback to modify DICOM tags before files are saved.
+     * 
+     * This callback is invoked **synchronously** for each received DICOM file, allowing you
+     * to modify tags before the file is written to disk. The callback receives the extracted
+     * tags as a plain object and must return a modified tags object.
+     * 
+     * **Important:** 
+     * - You must configure `extractTags` to specify which tags should be extracted
+     * - Only tags specified in `extractTags` will be available to modify
+     * - The callback blocks file storage, so keep operations fast
+     * - Tags are passed and returned as `Record<string, string>` (key-value pairs)
+     * - Must call this method BEFORE `listen()`
+     * 
+     * **Common Use Cases:**
+     * - **Anonymization**: Remove or replace patient-identifying information
+     * - **Tag Enrichment**: Add institution-specific metadata
+     * - **Validation**: Verify required tags are present (throw error to reject file)
+     * - **Normalization**: Standardize tag formats across different sources
+     * 
+     * @param callback - Synchronous function that receives tags and returns modified tags
+     * 
+     * @example
+     * ```typescript
+     * // Anonymization with patient ID mapping
+     * const scp = new StoreScp({
+     *   port: 11115,
+     *   outDir: './anonymized',
+     *   storeWithFileMeta: true, // Important for re-reading files
+     *   extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
+     * });
+     * 
+     * const patientMapping = new Map();
+     * let anonCounter = 1000;
+     * 
+     * scp.onBeforeStore((tags) => {
+     *   // Get or create anonymous ID
+     *   let anonId = patientMapping.get(tags.PatientID);
+     *   if (!anonId) {
+     *     anonId = `ANON_${anonCounter++}`;
+     *     patientMapping.set(tags.PatientID, anonId);
+     *   }
+     *   
+     *   return {
+     *     ...tags,
+     *     PatientName: 'ANONYMOUS^PATIENT',
+     *     PatientID: anonId,
+     *     PatientBirthDate: '',
+     *     StudyDescription: tags.StudyDescription 
+     *       ? `ANONYMIZED - ${tags.StudyDescription}` 
+     *       : 'ANONYMIZED STUDY'
+     *   };
+     * });
+     * 
+     * await scp.listen();
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Validation example
+     * scp.onBeforeStore((tags) => {
+     *   if (!tags.PatientID || !tags.StudyInstanceUID) {
+     *     throw new Error('Missing required patient or study identifiers');
+     *   }
+     *   
+     *   if (!/^\d+$/.test(tags.PatientID)) {
+     *     throw new Error('Invalid PatientID format - must be numeric');
+     *   }
+     *   
+     *   return tags; // No modifications, just validation
+     * });
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Tag normalization
+     * scp.onBeforeStore((tags) => {
+     *   return {
+     *     ...tags,
+     *     PatientName: tags.PatientName?.toUpperCase() || '',
+     *     PatientSex: tags.PatientSex?.toUpperCase() || 'O', // Default to 'Other'
+     *     StudyDescription: tags.StudyDescription?.trim() || 'UNKNOWN'
+     *   };
+     * });
+     * ```
+     */
+    #[napi(ts_args_type = "callback: (tags: Record<string, string>) => Record<string, string>")]
+    pub fn on_before_store(&mut self, callback: ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>) {
+        self.on_before_store = Some(Arc::new(callback));
     }
 
     fn emit_event(event: StoreScpEvent, data: ScpEventData) {

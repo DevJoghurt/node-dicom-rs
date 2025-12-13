@@ -207,6 +207,49 @@ receiver.onStudyCompleted((err, event) => {
 });
 ```
 
+### Tag Modification Before Storage 🆕
+
+Modify DICOM tags synchronously before files are saved using the `onBeforeStore` callback:
+
+```typescript
+const receiver = new StoreScp({
+    port: 4446,
+    outDir: './dicom-storage',
+    extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
+});
+
+// Anonymize incoming files before storage
+receiver.onBeforeStore((tags) => {
+    // Return modified tags - these will be written to the file
+    return {
+        ...tags,
+        PatientName: 'ANONYMOUS',
+        PatientID: `ANON_${Math.random().toString(36).substr(2, 9)}`,
+        PatientBirthDate: '', // Remove PHI
+        StudyDescription: tags.StudyDescription ? 
+            `ANONYMIZED - ${tags.StudyDescription}` : 
+            'ANONYMIZED STUDY'
+    };
+});
+
+await receiver.listen();
+```
+
+**Key Features:**
+- **Synchronous**: Blocks file storage until callback returns
+- **Pre-Storage**: Modifications applied BEFORE writing to disk
+- **Tag-Safe**: Only modifies extracted tags (specified in `extractTags`)
+- **Flexible**: Use for anonymization, validation, enrichment, or standardization
+
+**Use Cases:**
+- Real-time anonymization for research databases
+- Adding institution-specific metadata
+- Tag validation and quality control
+- Format standardization
+- PHI removal for GDPR/HIPAA compliance
+
+See [demos](./playground/demos/README.md#onbeforestore-callback) for complete examples.
+
 ### TypeScript Autocomplete
 
 Full autocomplete support for 300+ DICOM tags:
