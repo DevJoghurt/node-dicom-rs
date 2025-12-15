@@ -4,6 +4,39 @@ This directory contains demonstration scripts showing various features of the no
 
 ## Demos
 
+### DICOMweb Server Demo
+
+#### `dicomweb-server-demo.mjs`
+**Complete QIDO-RS server with high-level typed API** - This is the main demo showing how to build a production-ready QIDO-RS server.
+
+**Features:**
+- All 4 QIDO-RS query handlers (Studies, Series, Study Instances, Series Instances)
+- High-level builders (`QidoStudyResult`, `QidoSeriesResult`, `QidoInstanceResult`)
+- No DICOM tags - use typed methods like `.patientName()`, `.studyDate()`
+- Mock database with realistic test data
+- Complete filtering and pagination support
+- Graceful shutdown handling
+
+**Usage:**
+```bash
+node playground/demos/dicomweb-server-demo.mjs
+```
+
+**Test queries:**
+```bash
+# Search all studies
+curl http://localhost:8080/studies | jq .
+
+# Filter by PatientID
+curl "http://localhost:8080/studies?PatientID=12345" | jq .
+
+# Get series in study
+curl "http://localhost:8080/studies/1.2.840.113619.2.55.3.604688119.868.1234567890.1/series" | jq .
+
+# Get instances in series
+curl "http://localhost:8080/studies/1.2.840.../series/1.2.840.../instances" | jq .
+```
+
 ### Tag Update Demos
 
 #### `tag-update-demo.mjs`

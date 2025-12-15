@@ -532,6 +532,84 @@ export declare class DicomFile {
   close(): void
 }
 
+/** Builder for creating Instance-level DICOM JSON responses */
+export declare class QidoInstanceResult {
+  constructor()
+  sopInstanceUid(value: string): this
+  sopClassUid(value: string): this
+  instanceNumber(value: string): this
+  rows(value: string): this
+  columns(value: string): this
+  bitsAllocated(value: string): this
+  numberOfFrames(value: string): this
+}
+
+/** Builder for creating Series-level DICOM JSON responses */
+export declare class QidoSeriesResult {
+  constructor()
+  seriesInstanceUid(value: string): this
+  modality(value: string): this
+  seriesNumber(value: string): this
+  seriesDescription(value: string): this
+  seriesDate(value: string): this
+  seriesTime(value: string): this
+  performingPhysicianName(value: string): this
+  numberOfSeriesRelatedInstances(value: string): this
+  bodyPartExamined(value: string): this
+  protocolName(value: string): this
+}
+
+/** QIDO-RS Server (using warp + RUNTIME pattern like StoreSCP) */
+export declare class QidoServer {
+  constructor(port: number)
+  /**
+   * Register handler for "Search for Studies" query (GET /studies)
+   * Callback receives SearchForStudiesQuery and returns JSON string array
+   */
+  onSearchForStudies(callback: (err: Error | null, query: SearchForStudiesQuery) => string): void
+  /**
+   * Register handler for "Search for Series" query (GET /studies/{uid}/series)
+   * Callback receives SearchForSeriesQuery and returns JSON string array
+   */
+  onSearchForSeries(callback: (err: Error | null, query: SearchForSeriesQuery) => string): void
+  /**
+   * Register handler for "Search for Instances" in a Study (GET /studies/{uid}/instances)
+   * Callback receives SearchForStudyInstancesQuery and returns JSON string array
+   */
+  onSearchForStudyInstances(callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string): void
+  /**
+   * Register handler for "Search for Instances" in a Series (GET /studies/{uid}/series/{uid}/instances)
+   * Callback receives SearchForSeriesInstancesQuery and returns JSON string array
+   */
+  onSearchForSeriesInstances(callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string): void
+  /** Start the QIDO server using RUNTIME pattern like StoreSCP */
+  start(): void
+  /** Stop the QIDO server */
+  stop(): void
+}
+
+/**
+ * Builder for creating Study-level DICOM JSON responses
+ * Handles all the DICOM tags and VR types automatically
+ */
+export declare class QidoStudyResult {
+  constructor()
+  patientName(value: string): this
+  patientId(value: string): this
+  patientBirthDate(value: string): this
+  patientSex(value: string): this
+  studyInstanceUid(value: string): this
+  studyDate(value: string): this
+  studyTime(value: string): this
+  accessionNumber(value: string): this
+  studyDescription(value: string): this
+  studyId(value: string): this
+  referringPhysicianName(value: string): this
+  modalitiesInStudy(value: string): this
+  numberOfStudyRelatedSeries(value: string): this
+  numberOfStudyRelatedInstances(value: string): this
+}
+
 /** DICOM C-STORE SCP */
 export declare class StoreScp {
   /** * Create a new DICOM C-STORE SCP server instance.
@@ -1276,6 +1354,18 @@ export interface CommonTagSets {
  */
 export declare function createCustomTag(tag: string, name: string): CustomTag
 
+/** Helper to create empty response array */
+export declare function createQidoEmptyResponse(): string
+
+/** Create final JSON response from Instance results */
+export declare function createQidoInstancesResponse(instances: Array<QidoInstanceResult>): string
+
+/** Create final JSON response from Series results */
+export declare function createQidoSeriesResponse(series: Array<QidoSeriesResult>): string
+
+/** Create final JSON response from Study results */
+export declare function createQidoStudiesResponse(studies: Array<QidoStudyResult>): string
+
 /** * Custom tag specification for extracting non-standard or private DICOM tags.
  */
 export interface CustomTag {
@@ -1290,6 +1380,14 @@ export interface DicomFileMeta {
   sopClassUid: string
   /** Storage SOP Instance UID */
   sopInstanceUid: string
+}
+
+/** DICOM JSON Value representation (PS3.18 Section F.2.2) */
+export interface DicomJsonValue {
+  /** Value Representation (e.g., "PN", "DA", "TM", "UI", "LO", "SH") */
+  vr: string
+  /** Array of values - always an array even for single values */
+  value?: Array<string>
 }
 
 export interface FileErrorData {
@@ -1755,6 +1853,76 @@ export interface ScpEventDetails {
   study?: StudyHierarchyData
 }
 
+/**
+ * Search for Instances - All Instances in a Series
+ * Endpoint: /studies/{StudyInstanceUID}/series/{SeriesInstanceUID}/instances
+ */
+export interface SearchForSeriesInstancesQuery {
+  studyInstanceUid: string
+  seriesInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  sopClassUid?: string
+  sopInstanceUid?: string
+  instanceNumber?: string
+}
+
+/**
+ * Search for Series - All Series in a Study
+ * Endpoint: /studies/{StudyInstanceUID}/series
+ */
+export interface SearchForSeriesQuery {
+  studyInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  modality?: string
+  seriesInstanceUid?: string
+  seriesNumber?: string
+  performedProcedureStepStartDate?: string
+  performedProcedureStepStartTime?: string
+  scheduledProcedureStepId?: string
+  requestedProcedureId?: string
+}
+
+/**
+ * Search for Studies - All Studies
+ * Endpoint: /studies
+ */
+export interface SearchForStudiesQuery {
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  studyDate?: string
+  studyTime?: string
+  accessionNumber?: string
+  modalitiesInStudy?: string
+  referringPhysicianName?: string
+  patientName?: string
+  patientId?: string
+  studyInstanceUid?: string
+  studyId?: string
+}
+
+/**
+ * Search for Instances - All Instances in a Study
+ * Endpoint: /studies/{StudyInstanceUID}/instances
+ */
+export interface SearchForStudyInstancesQuery {
+  studyInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  sopClassUid?: string
+  sopInstanceUid?: string
+  instanceNumber?: string
+}
+
 /** Series data within a study */
 export interface SeriesHierarchyData {
   seriesInstanceUid: string
@@ -2136,75 +2304,4 @@ export declare const enum TransferSyntaxMode {
   UncompressedOnly = 'UncompressedOnly',
   /** Accept only specified transfer syntaxes */
   Custom = 'Custom'
-}
-
-/** QIDO-RS Query Parameters for Study Level */
-export interface QidoStudyQuery {
-  limit?: number
-  offset?: number
-  fuzzymatching?: boolean
-  patientName?: string
-  patientId?: string
-  studyDate?: string
-  studyInstanceUid?: string
-  accessionNumber?: string
-}
-
-/** QIDO-RS Query Parameters for Series Level */
-export interface QidoSeriesQuery {
-  limit?: number
-  offset?: number
-  modality?: string
-  seriesInstanceUid?: string
-  seriesNumber?: string
-}
-
-/** QIDO-RS Query Parameters for Instance Level */
-export interface QidoInstanceQuery {
-  limit?: number
-  offset?: number
-  sopInstanceUid?: string
-  instanceNumber?: string
-}
-
-/** QIDO-RS Query Response */
-export interface QidoResponse {
-  /** JSON representation of DICOM dataset */
-  data: string
-}
-
-/** QIDO-RS Server */
-export declare class QidoServer {
-  constructor(port: number)
-  /** Start the QIDO server (callback mechanism will be implemented in a future version) */
-  start(): void
-  /** Stop the QIDO server */
-  stop(): void
-}
-
-/** Storage backend configuration for WADO-RS */
-export interface WadoStorageConfig {
-  /** Storage type: "filesystem" or "s3" */
-  storageType: string
-  /** Base path for filesystem storage */
-  basePath?: string
-  /** S3 bucket name */
-  s3Bucket?: string
-  /** S3 region */
-  s3Region?: string
-  /** S3 endpoint (for MinIO or custom endpoints) */
-  s3Endpoint?: string
-  /** S3 access key */
-  s3AccessKey?: string
-  /** S3 secret key */
-  s3SecretKey?: string
-}
-
-/** WADO-RS Server */
-export declare class WadoServer {
-  constructor(port: number, config: WadoStorageConfig)
-  /** Start the WADO server */
-  start(): void
-  /** Stop the WADO server */
-  stop(): void
 }

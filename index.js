@@ -573,11 +573,19 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.DicomFile = nativeBinding.DicomFile
+module.exports.QidoInstanceResult = nativeBinding.QidoInstanceResult
+module.exports.QidoSeriesResult = nativeBinding.QidoSeriesResult
+module.exports.QidoServer = nativeBinding.QidoServer
+module.exports.QidoStudyResult = nativeBinding.QidoStudyResult
 module.exports.StoreScp = nativeBinding.StoreScp
 module.exports.StoreScu = nativeBinding.StoreScu
 module.exports.AbstractSyntaxMode = nativeBinding.AbstractSyntaxMode
 module.exports.combineTags = nativeBinding.combineTags
 module.exports.createCustomTag = nativeBinding.createCustomTag
+module.exports.createQidoEmptyResponse = nativeBinding.createQidoEmptyResponse
+module.exports.createQidoInstancesResponse = nativeBinding.createQidoInstancesResponse
+module.exports.createQidoSeriesResponse = nativeBinding.createQidoSeriesResponse
+module.exports.createQidoStudiesResponse = nativeBinding.createQidoStudiesResponse
 module.exports.getAvailableTagNames = nativeBinding.getAvailableTagNames
 module.exports.getCommonSopClasses = nativeBinding.getCommonSopClasses
 module.exports.getCommonTagSets = nativeBinding.getCommonTagSets
