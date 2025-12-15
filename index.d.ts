@@ -2137,3 +2137,74 @@ export declare const enum TransferSyntaxMode {
   /** Accept only specified transfer syntaxes */
   Custom = 'Custom'
 }
+
+/** QIDO-RS Query Parameters for Study Level */
+export interface QidoStudyQuery {
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  patientName?: string
+  patientId?: string
+  studyDate?: string
+  studyInstanceUid?: string
+  accessionNumber?: string
+}
+
+/** QIDO-RS Query Parameters for Series Level */
+export interface QidoSeriesQuery {
+  limit?: number
+  offset?: number
+  modality?: string
+  seriesInstanceUid?: string
+  seriesNumber?: string
+}
+
+/** QIDO-RS Query Parameters for Instance Level */
+export interface QidoInstanceQuery {
+  limit?: number
+  offset?: number
+  sopInstanceUid?: string
+  instanceNumber?: string
+}
+
+/** QIDO-RS Query Response */
+export interface QidoResponse {
+  /** JSON representation of DICOM dataset */
+  data: string
+}
+
+/** QIDO-RS Server */
+export declare class QidoServer {
+  constructor(port: number)
+  /** Start the QIDO server (callback mechanism will be implemented in a future version) */
+  start(): void
+  /** Stop the QIDO server */
+  stop(): void
+}
+
+/** Storage backend configuration for WADO-RS */
+export interface WadoStorageConfig {
+  /** Storage type: "filesystem" or "s3" */
+  storageType: string
+  /** Base path for filesystem storage */
+  basePath?: string
+  /** S3 bucket name */
+  s3Bucket?: string
+  /** S3 region */
+  s3Region?: string
+  /** S3 endpoint (for MinIO or custom endpoints) */
+  s3Endpoint?: string
+  /** S3 access key */
+  s3AccessKey?: string
+  /** S3 secret key */
+  s3SecretKey?: string
+}
+
+/** WADO-RS Server */
+export declare class WadoServer {
+  constructor(port: number, config: WadoStorageConfig)
+  /** Start the WADO server */
+  start(): void
+  /** Stop the WADO server */
+  stop(): void
+}
