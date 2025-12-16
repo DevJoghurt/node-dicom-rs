@@ -4,6 +4,8 @@
 __test__/fixtures/
 playground/testdata
 playground/test-*
+examples/*/.data
+examples/*/testdata
 
 ### Node ###
 # Logs

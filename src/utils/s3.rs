@@ -1,9 +1,10 @@
 use s3::{Bucket, Region};
 use s3::creds::Credentials;
 use tracing::{info, error};
+use serde::{Serialize, Deserialize};
 
 /// S3 storage configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[napi(object)]
 pub struct S3Config {
     /// S3 bucket name

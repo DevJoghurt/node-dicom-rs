@@ -4,6 +4,13 @@
   "type": "commonjs",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.js"
+    }
+  },
   "napi": {
     "binaryName": "node-dicom",
     "targets": [
@@ -17,7 +24,8 @@
   "license": "MIT",
   "files": [
     "index.d.ts",
-    "index.js"
+    "index.js",
+    "index.mjs"
   ],
   "devDependencies": {
     "@emnapi/core": "^1.7.1",

@@ -337,6 +337,270 @@ const data = file.extract(['PatientName', 'StudyDate', 'SeriesNumber']);
 
 For hierarchical organization by study/series/instance, use the `StoreScp` `OnStudyCompleted` event which provides a structured tree.
 
+## Helper Functions
+
+The library provides several helper functions to simplify common DICOM operations, especially for tag extraction and configuration.
+
+### getCommonTagSets()
+
+Get predefined sets of commonly used DICOM tags organized by category. This eliminates the need to manually type tag names and provides well-tested tag combinations.
+
+**Returns:** Object containing 13 different tag sets
+
+**Available Sets:**
+- `patientBasic` - Essential patient demographics (7 tags)
+- `studyBasic` - Study-level metadata (7 tags)
+- `seriesBasic` - Series-level metadata (8 tags)
+- `instanceBasic` - Instance identifiers (5 tags)
+- `imagePixelInfo` - Image dimensions and characteristics (9 tags)
+- `equipment` - Device and institution tags (6 tags)
+- `ct` - CT-specific parameters (6 tags)
+- `mr` - MR-specific parameters (6 tags)
+- `ultrasound` - Ultrasound-specific tags (6 tags)
+- `petNm` - PET/Nuclear Medicine tags (11 tags)
+- `xa` - X-Ray Angiography tags (8 tags)
+- `rt` - Radiation Therapy tags (11 tags)
+- `default` - Comprehensive set (42 tags: patient, study, series, instance, pixel info, equipment)
+
+**Example:**
+
+```typescript
+import { DicomFile, getCommonTagSets } from '@nuxthealth/node-dicom';
+
+const file = new DicomFile();
+await file.open('./scan.dcm');
+
+const tagSets = getCommonTagSets();
+
+// Extract patient demographics only
+const patientData = file.extract(tagSets.patientBasic);
+console.log('Patient:', patientData.PatientName);
+console.log('ID:', patientData.PatientID);
+console.log('Birth Date:', patientData.PatientBirthDate);
+
+// Extract study metadata
+const studyData = file.extract(tagSets.studyBasic);
+console.log('Study:', studyData.StudyDescription);
+console.log('Date:', studyData.StudyDate);
+
+// Extract comprehensive metadata (42 common tags)
+const allData = file.extract(tagSets.default);
+
+file.close();
+```
+
+**Modality-Specific Extraction:**
+
+```typescript
+const tagSets = getCommonTagSets();
+
+// CT workflow
+const ctData = file.extract(tagSets.ct);
+console.log('CT Parameters:');
+console.log('  kVp:', ctData.KVP);
+console.log('  Exposure Time:', ctData.ExposureTime);
+console.log('  Tube Current:', ctData.XRayTubeCurrent);
+console.log('  Convolution Kernel:', ctData.ConvolutionKernel);
+
+// MR workflow
+const mrData = file.extract(tagSets.mr);
+console.log('MR Parameters:');
+console.log('  TR:', mrData.RepetitionTime);
+console.log('  TE:', mrData.EchoTime);
+console.log('  Flip Angle:', mrData.FlipAngle);
+console.log('  Field Strength:', mrData.MagneticFieldStrength);
+
+// PET workflow
+const petData = file.extract(tagSets.petNm);
+console.log('PET Parameters:');
+console.log('  Units:', petData.Units);
+console.log('  Decay Correction:', petData.DecayCorrection);
+```
+
+### combineTags()
+
+Combine multiple tag arrays into a single deduplicated array. Useful for building custom tag sets from predefined groups.
+
+**Parameters:**
+- `tagArrays: string[][]` - Array of tag name arrays to combine
+
+**Returns:** `string[]` - Single array containing all unique tag names
+
+**Example:**
+
+```typescript
+import { DicomFile, getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
+
+const file = new DicomFile();
+await file.open('./scan.dcm');
+
+const tagSets = getCommonTagSets();
+
+// Combine predefined sets with custom tags
+const workflowTags = combineTags([
+    tagSets.patientBasic,
+    tagSets.studyBasic,
+    tagSets.seriesBasic,
+    ['WindowCenter', 'WindowWidth'],           // Display params
+    ['RescaleIntercept', 'RescaleSlope'],     // Rescale params
+    tagSets.ct                                 // CT-specific
+]);
+
+// Extract all tags at once (duplicates automatically removed)
+const data = file.extract(workflowTags);
+
+file.close();
+```
+
+**Build Reusable Configurations:**
+
+```typescript
+// config.ts - Define once, use everywhere
+import { getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+export const ANONYMIZATION_TAGS = combineTags([
+    tagSets.studyBasic,
+    tagSets.seriesBasic,
+    tagSets.instanceBasic
+    // Excludes patient demographics
+]);
+
+export const ROUTING_TAGS = combineTags([
+    ['StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID'],
+    ['Modality', 'StationName'],
+    ['StudyDate', 'StudyTime']
+]);
+
+export const QA_TAGS = combineTags([
+    tagSets.imagePixelInfo,
+    ['WindowCenter', 'WindowWidth', 'ImageType'],
+    ['BurnedInAnnotation', 'LossyImageCompression']
+]);
+
+// Use in your application
+import { QA_TAGS } from './config';
+const qaData = file.extract(QA_TAGS);
+```
+
+### getAvailableTagNames()
+
+Get a comprehensive list of 300+ commonly used DICOM tag names for validation and discovery.
+
+**Returns:** `string[]` - Array of standard DICOM tag names
+
+**Example:**
+
+```typescript
+import { getAvailableTagNames } from '@nuxthealth/node-dicom';
+
+// Get all available tags
+const allTags = getAvailableTagNames();
+console.log(`Total available: ${allTags.length} tags`);
+// Output: Total available: 300+ tags
+
+// Check if specific tag is available
+const hasTag = allTags.includes('WindowCenter');
+console.log('WindowCenter available:', hasTag); // true
+
+// Validate user input
+const userTags = ['PatientName', 'InvalidTag', 'StudyDate'];
+const validTags = userTags.filter(tag => allTags.includes(tag));
+console.log('Valid tags:', validTags); // ['PatientName', 'StudyDate']
+
+// Find patient-related tags
+const patientTags = allTags.filter(tag => 
+    tag.toLowerCase().includes('patient')
+);
+console.log('Patient tags:', patientTags);
+// ['PatientName', 'PatientID', 'PatientBirthDate', ...]
+
+// Find all UID tags
+const uidTags = allTags.filter(tag => tag.endsWith('UID'));
+console.log('UID tags:', uidTags);
+// ['StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID', ...]
+```
+
+### createCustomTag()
+
+Create custom tag specifications for private or vendor-specific DICOM tags.
+
+**Parameters:**
+- `tag: string` - DICOM tag in hex format (e.g., "00091001" or "(0009,1001)")
+- `name: string` - Human-readable name for this tag
+
+**Returns:** `CustomTag` object for use in extraction
+
+**Example:**
+
+```typescript
+import { DicomFile, createCustomTag, getCommonTagSets } from '@nuxthealth/node-dicom';
+
+const file = new DicomFile();
+await file.open('./scan-with-private-tags.dcm');
+
+// Define custom tags
+const customTags = [
+    createCustomTag('00091001', 'VendorSpecificID'),
+    createCustomTag('00431027', 'ScannerMode'),
+    createCustomTag('(0019,100A)', 'ProcessingFlags')
+];
+
+// Extract with custom tags
+const data = file.extract(
+    ['PatientName', 'StudyDate', 'Modality'],
+    customTags
+);
+
+console.log('Standard:', data.PatientName, data.Modality);
+console.log('Custom:', data.VendorSpecificID, data.ScannerMode);
+
+file.close();
+```
+
+**Vendor-Specific Tag Libraries:**
+
+```typescript
+// vendor-tags.ts
+import { createCustomTag } from '@nuxthealth/node-dicom';
+
+export const GE_TAGS = [
+    createCustomTag('00091001', 'GE_PrivateCreator'),
+    createCustomTag('00091027', 'GE_ScanOptions'),
+    createCustomTag('00431001', 'GE_ImageFiltering'),
+    createCustomTag('00431010', 'GE_ReconstructionParams')
+];
+
+export const SIEMENS_TAGS = [
+    createCustomTag('00191008', 'Siemens_ImagingMode'),
+    createCustomTag('00191009', 'Siemens_SequenceInfo'),
+    createCustomTag('00191010', 'Siemens_CoilID'),
+    createCustomTag('0029100C', 'Siemens_CoilString')
+];
+
+export const PHILIPS_TAGS = [
+    createCustomTag('20011001', 'Philips_ScanMode'),
+    createCustomTag('20011003', 'Philips_ContrastEnhancement'),
+    createCustomTag('20051080', 'Philips_ReconstructionParams')
+];
+
+// Dynamic selection
+export function getVendorTags(manufacturer: string) {
+    const vendor = manufacturer.toLowerCase();
+    if (vendor.includes('ge')) return GE_TAGS;
+    if (vendor.includes('siemens')) return SIEMENS_TAGS;
+    if (vendor.includes('philips')) return PHILIPS_TAGS;
+    return [];
+}
+
+// Usage
+import { getVendorTags } from './vendor-tags';
+
+const mfgData = file.extract(['Manufacturer']);
+const vendorTags = getVendorTags(mfgData.Manufacturer);
+const allData = file.extract(tagSets.default, vendorTags);
+
 ## Inspecting DICOM Files
 
 ### Dump to Console
@@ -893,6 +1157,289 @@ file.close();
 | `processPixelData()` | `Promise<string>` | Yes | Yes* | Yes | Advanced processing with file output |
 
 \* Requires `transcode` feature
+
+### Advanced Image Rendering with processPixelData()
+
+The `processPixelData()` method provides comprehensive image rendering capabilities, converting DICOM pixel data to standard image formats (JPEG, PNG, BMP) with full VOI LUT support, windowing, and format conversion.
+
+**Method Signature:**
+
+```typescript
+await file.processPixelData(options: {
+    outputPath: string,           // Output file path
+    format: 'Jpeg' | 'Png' | 'Bmp',  // Output format
+    decode?: boolean,             // Decompress if needed (default: false)
+    width?: number,               // Output width (maintains aspect ratio)
+    height?: number,              // Output height (maintains aspect ratio)
+    quality?: number,             // JPEG quality 1-100 (default: 90)
+    windowCenter?: number,        // Manual window center
+    windowWidth?: number,         // Manual window width
+    applyVoiLut?: boolean,       // Use WindowCenter/Width from file
+    rescaleIntercept?: number,   // Override rescale intercept
+    rescaleSlope?: number,       // Override rescale slope
+    convertTo8bit?: boolean,     // Force 8-bit output
+    frameNumber?: number         // Extract specific frame (0-based)
+}): Promise<string>
+```
+
+**Basic Image Rendering:**
+
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
+
+const file = new DicomFile();
+await file.open('./ct-scan.dcm');
+
+// Default JPEG rendering with automatic VOI LUT
+await file.processPixelData({
+    outputPath: 'output.jpg',
+    format: 'Jpeg',
+    decode: true,
+    applyVoiLut: true  // Use WindowCenter/Width from file
+});
+
+// High-quality PNG
+await file.processPixelData({
+    outputPath: 'output.png',
+    format: 'Png',
+    decode: true,
+    applyVoiLut: true
+});
+
+file.close();
+```
+
+**Manual Windowing for CT:**
+
+```typescript
+const file = new DicomFile();
+await file.open('./ct-abdomen.dcm');
+
+// Soft tissue window (C=40, W=400)
+await file.processPixelData({
+    outputPath: 'soft-tissue.jpg',
+    format: 'Jpeg',
+    decode: true,
+    windowCenter: 40,
+    windowWidth: 400,
+    quality: 90
+});
+
+// Lung window (C=-600, W=1500)
+await file.processPixelData({
+    outputPath: 'lung.jpg',
+    format: 'Jpeg',
+    decode: true,
+    windowCenter: -600,
+    windowWidth: 1500
+});
+
+// Bone window (C=300, W=1500)
+await file.processPixelData({
+    outputPath: 'bone.jpg',
+    format: 'Jpeg',
+    decode: true,
+    windowCenter: 300,
+    windowWidth: 1500
+});
+
+file.close();
+```
+
+**Common CT Windowing Presets:**
+
+| Preset | Center | Width | Use Case |
+|--------|--------|-------|----------|
+| Soft Tissue | 40 | 400 | Abdomen, pelvis, general soft tissue |
+| Lung | -600 | 1500 | Chest, lung parenchyma |
+| Bone | 300 | 1500 | Skeletal structures, fractures |
+| Brain | 40 | 80 | Head CT, intracranial structures |
+| Liver | 60 | 160 | Liver parenchyma |
+
+**Viewport Transformation:**
+
+```typescript
+// Resize to specific dimensions (maintains aspect ratio)
+await file.processPixelData({
+    outputPath: 'thumbnail.jpg',
+    format: 'Jpeg',
+    decode: true,
+    width: 256,
+    height: 256,
+    applyVoiLut: true
+});
+
+// Web-friendly size with custom windowing
+await file.processPixelData({
+    outputPath: 'web-preview.jpg',
+    format: 'Jpeg',
+    decode: true,
+    width: 512,
+    height: 512,
+    windowCenter: 40,
+    windowWidth: 400,
+    quality: 85
+});
+```
+
+**Frame Extraction from Multi-frame Images:**
+
+```typescript
+const file = new DicomFile();
+await file.open('./cine-loop.dcm');
+
+const info = file.getPixelDataInfo();
+console.log(`Total frames: ${info.frames}`);
+
+// Extract specific frames
+for (let i = 0; i < info.frames; i++) {
+    await file.processPixelData({
+        outputPath: `frame-${i.toString().padStart(4, '0')}.jpg`,
+        format: 'Jpeg',
+        decode: true,
+        frameNumber: i,
+        applyVoiLut: true,
+        quality: 90
+    });
+}
+
+file.close();
+```
+
+**8-bit Conversion for Display:**
+
+```typescript
+// Convert 16-bit DICOM to 8-bit image
+await file.processPixelData({
+    outputPath: '8bit-display.jpg',
+    format: 'Jpeg',
+    decode: true,
+    convertTo8bit: true,
+    applyVoiLut: true
+});
+```
+
+**Batch Processing Multiple Files:**
+
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
+import { readdir } from 'fs/promises';
+import path from 'path';
+
+async function batchRender(inputDir: string, outputDir: string) {
+    const files = await readdir(inputDir);
+    const dcmFiles = files.filter(f => f.endsWith('.dcm'));
+    
+    for (const filename of dcmFiles) {
+        const file = new DicomFile();
+        const inputPath = path.join(inputDir, filename);
+        const outputPath = path.join(outputDir, filename.replace('.dcm', '.jpg'));
+        
+        try {
+            await file.open(inputPath);
+            
+            await file.processPixelData({
+                outputPath,
+                format: 'Jpeg',
+                decode: true,
+                applyVoiLut: true,
+                quality: 90
+            });
+            
+            console.log(`✓ ${filename}`);
+        } catch (err) {
+            console.error(`✗ ${filename}:`, err.message);
+        } finally {
+            file.close();
+        }
+    }
+}
+
+await batchRender('./dicom-input', './jpeg-output');
+```
+
+**Complete Rendering Workflow:**
+
+```typescript
+import { DicomFile } from '@nuxthealth/node-dicom';
+
+async function renderWithPresets(dicomPath: string, outputDir: string) {
+    const file = new DicomFile();
+    await file.open(dicomPath);
+    
+    const info = file.getPixelDataInfo();
+    const basename = path.basename(dicomPath, '.dcm');
+    
+    console.log('Rendering:', dicomPath);
+    console.log(`  Dimensions: ${info.width}x${info.height}`);
+    console.log(`  Frames: ${info.frames}`);
+    console.log(`  Compressed: ${info.isCompressed}`);
+    
+    // Automatic VOI LUT
+    await file.processPixelData({
+        outputPath: path.join(outputDir, `${basename}-auto.jpg`),
+        format: 'Jpeg',
+        decode: true,
+        applyVoiLut: true,
+        quality: 90
+    });
+    
+    // CT presets
+    if (info.windowCenter && info.rescaleIntercept !== undefined) {
+        const presets = [
+            { name: 'soft-tissue', center: 40, width: 400 },
+            { name: 'lung', center: -600, width: 1500 },
+            { name: 'bone', center: 300, width: 1500 }
+        ];
+        
+        for (const preset of presets) {
+            await file.processPixelData({
+                outputPath: path.join(outputDir, `${basename}-${preset.name}.jpg`),
+                format: 'Jpeg',
+                decode: true,
+                windowCenter: preset.center,
+                windowWidth: preset.width,
+                quality: 90
+            });
+        }
+    }
+    
+    // Thumbnail
+    await file.processPixelData({
+        outputPath: path.join(outputDir, `${basename}-thumb.jpg`),
+        format: 'Jpeg',
+        decode: true,
+        width: 256,
+        height: 256,
+        applyVoiLut: true,
+        quality: 85
+    });
+    
+    file.close();
+    console.log('✓ Rendering complete');
+}
+
+await renderWithPresets('./ct-scan.dcm', './output');
+```
+
+**Image Processing Features:**
+
+- **VOI LUT Support**: Automatic application of WindowCenter/WindowWidth from DICOM files
+- **Rescale Parameters**: Support for RescaleIntercept and RescaleSlope (Hounsfield units in CT)
+- **Frame Extraction**: Extract specific frames from multi-frame DICOM images
+- **8-bit Conversion**: Automatic windowing and conversion to 8-bit for display
+- **Signed/Unsigned Pixels**: Proper handling of pixel representation
+- **Format Conversion**: JPEG, PNG, or BMP output
+- **Quality Control**: Configurable JPEG compression quality
+- **Viewport Transformation**: Resize with aspect ratio preservation using high-quality Lanczos3 resampling
+
+**Important Notes:**
+
+- Requires `transcode` feature to be enabled at build time
+- Manual windowing parameters override automatic VOI LUT
+- Viewport transformation maintains aspect ratio (image may not fill entire viewport)
+- JPEG quality affects file size and image quality (90 recommended for diagnostic use)
+- PNG format is lossless but produces larger files
 
 ### Complete Pixel Data Example
 

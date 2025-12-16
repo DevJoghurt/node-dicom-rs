@@ -1180,9 +1180,535 @@ console.log(getAvailableTagNames());
 console.log(getAvailableTagNames());
 ```
 
-## Events
+## Helper Functions
 
-### OnServerStarted
+node-dicom-rs provides helper functions to simplify common configuration tasks.
+
+### getCommonTagSets()
+
+Get predefined sets of commonly used DICOM tags organized by category.
+
+**Available Sets:**
+- `patientBasic` - Essential patient demographics (7 tags)
+- `studyBasic` - Study-level metadata (7 tags)
+- `seriesBasic` - Series-level metadata (8 tags)
+- `instanceBasic` - Instance identifiers (5 tags)
+- `imagePixelInfo` - Image dimensions and characteristics (9 tags)
+- `equipment` - Device and institution tags (6 tags)
+- `ct` - CT-specific parameters (6 tags)
+- `mr` - MR-specific parameters (6 tags)
+- `ultrasound` - Ultrasound-specific tags (6 tags)
+- `petNm` - PET/Nuclear Medicine tags (11 tags)
+- `xa` - X-Ray Angiography tags (8 tags)
+- `rt` - Radiation Therapy tags (11 tags)
+- `default` - Comprehensive set (42 tags combining patient, study, series, instance, pixel, equipment)
+
+**Example:**
+
+```typescript
+import { StoreScp, getCommonTagSets } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+const receiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'MY-SCP',
+    outDir: './dicom-storage',
+    extractTags: tagSets.default  // Extract 42 common tags
+});
+
+receiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('Patient:', tags.PatientName);
+        console.log('Study:', tags.StudyDescription);
+        console.log('Modality:', tags.Modality);
+    }
+});
+```
+
+**Modality-Specific Configuration:**
+
+```typescript
+import { StoreScp, getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+// CT receiver with CT-specific parameters
+const ctReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'CT-SCP',
+    outDir: './ct-storage',
+    extractTags: combineTags([
+        tagSets.default,
+        tagSets.ct
+    ])
+});
+
+ctReceiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('CT Parameters:');
+        console.log('  kVp:', tags.KVP);
+        console.log('  Tube Current:', tags.XRayTubeCurrent);
+        console.log('  Kernel:', tags.ConvolutionKernel);
+    }
+});
+
+// MR receiver with MR-specific parameters
+const mrReceiver = new StoreScp({
+    port: 4447,
+    callingAeTitle: 'MR-SCP',
+    outDir: './mr-storage',
+    extractTags: combineTags([
+        tagSets.default,
+        tagSets.mr
+    ])
+});
+
+mrReceiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('MR Parameters:');
+        console.log('  TR:', tags.RepetitionTime);
+        console.log('  TE:', tags.EchoTime);
+        console.log('  Field Strength:', tags.MagneticFieldStrength);
+    }
+});
+```
+
+### combineTags()
+
+Combine multiple tag arrays into a single deduplicated array.
+
+**Example:**
+
+```typescript
+import { getCommonTagSets, combineTags } from '@nuxthealth/node-dicom';
+
+const tagSets = getCommonTagSets();
+
+// Combine predefined sets
+const workflowTags = combineTags([
+    tagSets.patientBasic,
+    tagSets.studyBasic,
+    tagSets.seriesBasic,
+    ['WindowCenter', 'WindowWidth'],           // Display params
+    ['RescaleIntercept', 'RescaleSlope']      // Rescale params
+]);
+
+const receiver = new StoreScp({
+    port: 4446,
+    outDir: './storage',
+    extractTags: workflowTags
+});
+```
+
+### getCommonSopClasses()
+
+Get predefined sets of SOP Class UIDs organized by modality.
+
+**Available Sets:**
+- `ct` - CT Image Storage
+- `mr` - MR Image Storage  
+- `us` - Ultrasound Image Storage
+- `pet` - PET Image Storage
+- `nm` - Nuclear Medicine Image Storage
+- `xa` - X-Ray Angiographic Image Storage
+- `dx` - Digital X-Ray Image Storage
+- `mg` - Digital Mammography X-Ray Image Storage
+- `sc` - Secondary Capture Image Storage
+- `rt` - RT Image, Dose, Structure Set, Plan Storage
+- `all` - All above SOP classes
+
+**Example:**
+
+```typescript
+import { StoreScp, getCommonSopClasses } from '@nuxthealth/node-dicom';
+
+const sopClasses = getCommonSopClasses();
+
+// Accept only CT images
+const ctReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'CT-SCP',
+    outDir: './ct-storage',
+    abstractSyntaxMode: 'Custom',
+    abstractSyntaxes: sopClasses.ct
+});
+
+// Accept CT and MR
+const crossModalityReceiver = new StoreScp({
+    port: 4447,
+    callingAeTitle: 'CROSS-SCP',
+    outDir: './multimodal-storage',
+    abstractSyntaxMode: 'Custom',
+    abstractSyntaxes: [...sopClasses.ct, ...sopClasses.mr]
+});
+```
+
+### getCommonTransferSyntaxes()
+
+Get predefined sets of Transfer Syntax UIDs for compression and encoding.
+
+**Available Sets:**
+- `uncompressed` - Explicit/Implicit VR Little/Big Endian
+- `jpegLossy` - JPEG Lossy compressions
+- `jpegLossless` - JPEG Lossless compressions
+- `jpeg2000Lossy` - JPEG 2000 Lossy
+- `jpeg2000Lossless` - JPEG 2000 Lossless
+- `rle` - RLE Lossless
+- `all` - All common transfer syntaxes
+
+**Example:**
+
+```typescript
+import { StoreScp, getCommonTransferSyntaxes } from '@nuxthealth/node-dicom';
+
+const transferSyntaxes = getCommonTransferSyntaxes();
+
+// Accept only uncompressed images
+const uncompressedReceiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'UNCOMP-SCP',
+    outDir: './uncompressed',
+    transferSyntaxMode: 'Custom',
+    transferSyntaxes: transferSyntaxes.uncompressed
+});
+
+// Accept lossless only
+const losslessReceiver = new StoreScp({
+    port: 4447,
+    callingAeTitle: 'LOSSLESS-SCP',
+    outDir: './lossless-storage',
+    transferSyntaxMode: 'Custom',
+    transferSyntaxes: [
+        ...transferSyntaxes.uncompressed,
+        ...transferSyntaxes.jpegLossless,
+        ...transferSyntaxes.jpeg2000Lossless,
+        ...transferSyntaxes.rle
+    ]
+});
+```
+
+### getAvailableTagNames()
+
+Get a list of 300+ commonly used DICOM tag names for validation and discovery.
+
+**Example:**
+
+```typescript
+import { getAvailableTagNames } from '@nuxthealth/node-dicom';
+
+const allTags = getAvailableTagNames();
+console.log(`Total available: ${allTags.length} tags`);
+
+// Validate user input
+const userTags = ['PatientName', 'InvalidTag', 'StudyDate'];
+const validTags = userTags.filter(tag => allTags.includes(tag));
+console.log('Valid tags:', validTags); // ['PatientName', 'StudyDate']
+
+// Find specific tags
+const patientTags = allTags.filter(tag => 
+    tag.toLowerCase().includes('patient')
+);
+console.log('Patient tags:', patientTags);
+```
+
+### createCustomTag()
+
+Create custom tag specifications for private or vendor-specific DICOM tags.
+
+**Example:**
+
+```typescript
+import { StoreScp, createCustomTag } from '@nuxthealth/node-dicom';
+
+const customTags = [
+    createCustomTag('00091001', 'VendorID'),
+    createCustomTag('00091010', 'ScannerMode'),
+    createCustomTag('00431001', 'ImageQuality')
+];
+
+const receiver = new StoreScp({
+    port: 4446,
+    callingAeTitle: 'MY-SCP',
+    outDir: './received',
+    extractTags: ['PatientName', 'StudyDate', 'Modality'],
+    extractCustomTags: customTags
+});
+
+receiver.onFileStored((err, event) => {
+    const tags = event.data?.tags;
+    if (tags) {
+        console.log('Standard:', tags.PatientName);
+        console.log('Custom:', tags.VendorID, tags.ScannerMode);
+    }
+});
+```
+
+## Events and Callbacks
+
+### onBeforeStore (Callback)
+
+The `onBeforeStore` callback allows you to intercept and modify DICOM tags **before** files are saved to disk. This is a powerful feature for anonymization, validation, tag normalization, and audit logging.
+
+**Important:** This is a callback (registered with a method), not an event listener.
+
+```typescript
+// Register the callback BEFORE calling listen()
+receiver.onBeforeStore((tags) => {
+  // Modify tags as needed
+  return {
+    ...tags,
+    PatientName: 'ANONYMOUS^PATIENT',
+    PatientID: generateAnonymousId(tags.PatientID)
+  };
+});
+
+await receiver.listen();
+```
+
+#### Callback Signature
+
+```typescript
+type OnBeforeStoreCallback = (tags: Record<string, string>) => Record<string, string>;
+```
+
+**Parameters:**
+- `tags`: Object containing the extracted DICOM tags as key-value pairs
+
+**Returns:**
+- Modified tags object with the same structure
+
+**Important Notes:**
+1. The callback is **synchronous for each file** - it completes before that file is saved
+2. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
+3. Only tags specified in `extractTags` configuration are available
+4. You must return a complete tags object (can include the same values if no modification needed)
+5. If `extractTags` is empty or not configured, the callback won't be invoked
+6. Must call `onBeforeStore()` **before** calling `listen()`
+
+#### Configuration Requirements
+
+To use `onBeforeStore`, you must:
+
+1. **Configure `extractTags`**: Specify which tags to extract and modify
+   ```typescript
+   extractTags: ['PatientName', 'PatientID', 'StudyDescription', 'PatientBirthDate']
+   ```
+
+2. **Enable `storeWithFileMeta`**: Ensure files are saved with DICOM meta header (recommended)
+   ```typescript
+   storeWithFileMeta: true
+   ```
+
+3. **Register the callback** before calling `listen()`
+
+#### Use Cases
+
+##### 1. Anonymization
+
+```javascript
+const patientMapping = new Map();
+let anonymousCounter = 1000;
+
+receiver.onBeforeStore((tags) => {
+  // Generate or retrieve anonymous ID
+  let anonymousID = patientMapping.get(tags.PatientID);
+  if (!anonymousID) {
+    anonymousID = `ANON_${String(anonymousCounter++).padStart(4, '0')}`;
+    patientMapping.set(tags.PatientID, anonymousID);
+  }
+
+  return {
+    ...tags,
+    PatientName: 'ANONYMOUS^PATIENT',
+    PatientID: anonymousID,
+    PatientBirthDate: '',
+    PatientSex: '',
+    StudyDescription: tags.StudyDescription 
+      ? `ANONYMIZED - ${tags.StudyDescription}` 
+      : 'ANONYMIZED STUDY'
+  };
+});
+```
+
+##### 2. Validation
+
+```javascript
+receiver.onBeforeStore((tags) => {
+  // Validate required fields
+  if (!tags.PatientID || !tags.StudyInstanceUID) {
+    throw new Error('Missing required tags: PatientID or StudyInstanceUID');
+  }
+  
+  // Validate format
+  if (!/^\d+$/.test(tags.PatientID)) {
+    throw new Error(`Invalid PatientID format: ${tags.PatientID}`);
+  }
+  
+  // Validate modality
+  const allowedModalities = ['CT', 'MR', 'US', 'CR', 'DR'];
+  if (!allowedModalities.includes(tags.Modality)) {
+    throw new Error(`Unsupported modality: ${tags.Modality}`);
+  }
+  
+  return tags;
+});
+```
+
+##### 3. Tag Normalization
+
+```javascript
+receiver.onBeforeStore((tags) => {
+  return {
+    ...tags,
+    // Normalize patient name to uppercase
+    PatientName: tags.PatientName?.toUpperCase() || '',
+    // Ensure consistent date format (YYYYMMDD)
+    PatientBirthDate: tags.PatientBirthDate?.replace(/[^0-9]/g, '') || '',
+    // Standardize study description
+    StudyDescription: tags.StudyDescription?.trim() || '',
+    // Add facility prefix to patient ID
+    PatientID: tags.PatientID ? `FACILITY_${tags.PatientID}` : ''
+  };
+});
+```
+
+##### 4. Audit Logging
+
+```javascript
+import { appendFileSync } from 'fs';
+
+receiver.onBeforeStore((tags) => {
+  // Log all incoming files for audit trail
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    patientID: tags.PatientID,
+    studyUID: tags.StudyInstanceUID,
+    modality: tags.Modality,
+    studyDate: tags.StudyDate,
+    studyDescription: tags.StudyDescription
+  };
+  
+  appendFileSync('./audit-log.json', JSON.stringify(logEntry) + '\n');
+  
+  // Return unmodified tags
+  return tags;
+});
+```
+
+#### Complete Example: Anonymization Server
+
+```typescript
+import { StoreScp } from '@nuxthealth/node-dicom';
+
+const anonymousMapping = new Map();
+let counter = 1000;
+
+const receiver = new StoreScp({
+  port: 11115,
+  callingAeTitle: 'ANON-SCP',
+  outDir: './anonymized-storage',
+  storeWithFileMeta: true,
+  extractTags: [
+    'PatientName',
+    'PatientID',
+    'PatientBirthDate',
+    'PatientSex',
+    'StudyDescription',
+    'StudyInstanceUID',
+    'Modality'
+  ],
+  verbose: true
+});
+
+// Register anonymization callback
+receiver.onBeforeStore((tags) => {
+  console.log(`Anonymizing: ${tags.PatientName} (${tags.PatientID})`);
+  
+  let anonymousID = anonymousMapping.get(tags.PatientID);
+  if (!anonymousID) {
+    anonymousID = `ANON_${String(counter++).padStart(4, '0')}`;
+    anonymousMapping.set(tags.PatientID, anonymousID);
+    console.log(`  New mapping: ${tags.PatientID} → ${anonymousID}`);
+  }
+
+  return {
+    ...tags,
+    PatientName: 'ANONYMOUS^PATIENT',
+    PatientID: anonymousID,
+    PatientBirthDate: '',
+    PatientSex: '',
+    StudyDescription: tags.StudyDescription 
+      ? `ANONYMIZED - ${tags.StudyDescription}` 
+      : 'ANONYMIZED STUDY'
+  };
+});
+
+receiver.onServerStarted((err, event) => {
+  if (err) {
+    console.error('Server start error:', err);
+    return;
+  }
+  console.log('✓ Anonymization server started:', event.message);
+});
+
+receiver.onFileStored((err, event) => {
+  if (err) {
+    console.error('Storage error:', err);
+    return;
+  }
+  const data = event.data;
+  console.log(`✓ Anonymized file stored: ${data.file}`);
+  console.log(`  Patient: ${data.tags?.PatientName} (${data.tags?.PatientID})`);
+});
+
+receiver.listen();
+```
+
+#### Error Handling
+
+If the callback throws an error:
+- The file will **not** be saved to disk
+- The sending SCU receives a DICOM error status
+- The association remains open for subsequent files
+- Error is logged if `verbose: true`
+
+```typescript
+receiver.onBeforeStore((tags) => {
+  // Validation example
+  if (!tags.PatientID) {
+    throw new Error('PatientID is required');
+  }
+  
+  // Business rule example
+  if (tags.Modality === 'CT' && !tags.StudyDescription) {
+    throw new Error('StudyDescription required for CT studies');
+  }
+  
+  return tags;
+});
+```
+
+#### Performance Considerations
+
+1. **Per-file processing**: The callback is synchronous for each individual file, but the server handles multiple files asynchronously in parallel. Multiple incoming files are processed concurrently, each with its own callback invocation.
+2. **What's Fast Enough**:
+   - ✅ String manipulation (uppercase, trim, format)
+   - ✅ Map/object lookups (patient ID mapping)
+   - ✅ Simple validation (regex, length checks)
+   - ✅ In-memory operations (most use cases)
+   - ⚠️ Database queries (consider caching)
+   - ❌ Heavy CPU work (image processing, cryptography)
+   - ❌ Slow external API calls (unless cached)
+3. **Thread safety**: The callback is called from async Rust context via ThreadsafeFunction - perfectly safe for concurrent execution
+4. **Tag extraction overhead**: Only extract tags you need to modify
+5. **Memory**: Each callback invocation clones the tags HashMap (typically <1KB per file)
+
+
+### OnServerStarted (Event)
 
 Triggered when the server starts listening.
 
@@ -1196,7 +1722,7 @@ receiver.onServerStarted((err, event) => {
 });
 ```
 
-### OnFileStored
+### OnFileStored (Event)
 
 Triggered when each DICOM file is received and stored.
 
@@ -1249,7 +1775,7 @@ Event data structure (flat tags):
 }
 ```
 
-### OnStudyCompleted
+### OnStudyCompleted (Event)
 
 Triggered when no new files are received for a study after the timeout period.
 
@@ -1433,12 +1959,14 @@ receiver.listen();
 ## Tips
 
 1. **Tag extraction is always flat**: `OnFileStored` provides flat tags for simple access; `OnStudyCompleted` provides hierarchical organization with flat tags at each level
-2. **Configure SOP classes**: Limit to only the modalities you need for better control and security
-3. **Set appropriate timeout**: Adjust `studyTimeout` based on your typical scan duration and network speed
-4. **Use S3 for production scale**: Filesystem is good for development, S3 for unlimited scalable storage
-5. **Extract only needed tags**: Don't extract unnecessary tags to reduce memory usage and processing time
-6. **Start with defaults**: Begin with simple configuration and add complexity only as needed
-7. **Enable verbose for debugging**: Use `verbose: true` during development to see detailed protocol information
-8. **Test with real data**: Always test with actual DICOM files from your modalities before production
-9. **Monitor disk space**: With Filesystem storage, ensure adequate space and set up monitoring/alerts
-10. **Secure your credentials**: Never hardcode S3 credentials - use environment variables or secret management
+2. **Use onBeforeStore for real-time processing**: Anonymize, validate, or normalize tags before files are saved to disk
+3. **Configure SOP classes**: Limit to only the modalities you need for better control and security
+4. **Set appropriate timeout**: Adjust `studyTimeout` based on your typical scan duration and network speed
+5. **Use S3 for production scale**: Filesystem is good for development, S3 for unlimited scalable storage
+6. **Extract only needed tags**: Don't extract unnecessary tags to reduce memory usage and processing time
+7. **Start with defaults**: Begin with simple configuration and add complexity only as needed
+8. **Enable verbose for debugging**: Use `verbose: true` during development to see detailed protocol information
+9. **Test with real data**: Always test with actual DICOM files from your modalities before production
+10. **Monitor disk space**: With Filesystem storage, ensure adequate space and set up monitoring/alerts
+11. **Secure your credentials**: Never hardcode S3 credentials - use environment variables or secret management
+12. **Enable storeWithFileMeta when using onBeforeStore**: Ensures proper DICOM file structure after tag modifications

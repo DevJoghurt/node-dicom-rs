@@ -1,0 +1,22 @@
+{
+  "name": "pacs-sqlite-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Complete PACS implementation with StoreSCP, QIDO-RS, WADO-RS, SQLite database, and OHIF Viewer",
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build",
+    "preview": "node .output/server/index.mjs",
+    "download-testdata": "bash scripts/downloadTestData.sh"
+  },
+  "dependencies": {
+    "@nuxthealth/node-dicom": "file:../..",
+    "nitro": "^3.0.1-alpha.1",
+    "vite": "^7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.2",
+    "typescript": "^5.9.3"
+  }
+}

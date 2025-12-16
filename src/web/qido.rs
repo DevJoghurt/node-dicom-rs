@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use warp::Filter;
 
 lazy_static::lazy_static! {
-    // Global tokio runtime - CRITICAL: Same pattern as StoreSCP for ThreadsafeFunction to work
+    // Global tokio runtime
     static ref RUNTIME: Runtime = Runtime::new().unwrap();
 }
 
@@ -470,10 +470,28 @@ pub fn create_qido_empty_response() -> String {
 // QIDO-RS Server with Typed Handlers
 // ============================================================================
 
+/// QIDO-RS Server Configuration
+#[napi(object)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QidoServerConfig {
+    /// Enable CORS (Cross-Origin Resource Sharing) headers
+    /// Default: false
+    pub enable_cors: Option<bool>,
+    
+    /// CORS allowed origins (comma-separated list of origins)
+    /// Examples: "http://localhost:3000", "https://example.com,https://app.example.com"
+    /// If not specified, allows all origins (*) when CORS is enabled
+    pub cors_allowed_origins: Option<String>,
+    
+    /// Enable verbose logging for debugging
+    pub verbose: Option<bool>,
+}
+
 /// QIDO-RS Server (using warp + RUNTIME pattern like StoreSCP)
 #[napi]
 pub struct QidoServer {
     port: u16,
+    config: QidoServerConfig,
     search_for_studies_handler: Arc<RwLock<Option<Arc<SearchForStudiesHandler>>>>,
     search_for_series_handler: Arc<RwLock<Option<Arc<SearchForSeriesHandler>>>>,
     search_for_study_instances_handler: Arc<RwLock<Option<Arc<SearchForStudyInstancesHandler>>>>,
@@ -483,10 +501,101 @@ pub struct QidoServer {
 
 #[napi]
 impl QidoServer {
+    /**
+     * Create a new QIDO-RS server.
+     * 
+     * QIDO-RS (Query based on ID for DICOM Objects) is the query service of DICOMweb.
+     * It provides RESTful endpoints for searching DICOM studies, series, and instances.
+     * 
+     * **DICOM Standard Reference:** PS3.18 Section 10 - QIDO-RS
+     * 
+     * ## CORS Configuration
+     * 
+     * CORS (Cross-Origin Resource Sharing) is essential for web applications that need to
+     * query DICOM data from a different domain than the QIDO-RS server.
+     * 
+     * ### When to Enable CORS:
+     * - Web-based DICOM viewers (e.g., OHIF Viewer, Cornerstone-based apps)
+     * - Single-page applications (SPAs) accessing PACS from different origin
+     * - Development environments with separate frontend/backend servers
+     * - Mobile apps using WebView accessing DICOM services
+     * 
+     * ### Security Considerations:
+     * - **Production:** Specify exact allowed origins in `cors_allowed_origins`
+     * - **Development:** Can use wildcard (*) but NOT recommended for production
+     * - Always use HTTPS in production to prevent MITM attacks
+     * - Consider implementing authentication/authorization with CORS
+     * 
+     * @param port - Port number to listen on (e.g., 8042 for PACS, 8080 for testing)
+     * @param config - Server configuration including CORS settings
+     * @returns QidoServer instance
+     * 
+     * @example
+     * ```typescript
+     * // Basic server without CORS (internal network only)
+     * const qido = new QidoServer(8042, {
+     *   verbose: true
+     * });
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Development server with CORS enabled (allows all origins)
+     * const qido = new QidoServer(8042, {
+     *   enableCors: true,
+     *   verbose: true
+     * });
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Production server with specific allowed origins
+     * const qido = new QidoServer(8042, {
+     *   enableCors: true,
+     *   corsAllowedOrigins: 'https://viewer.hospital.com,https://app.hospital.com',
+     *   verbose: false
+     * });
+     * ```
+     * 
+     * @example
+     * ```typescript
+     * // Complete QIDO-RS server with handlers
+     * import { QidoServer } from '@nuxthealth/node-dicom';
+     * 
+     * const qido = new QidoServer(8042, {
+     *   enableCors: true,
+     *   corsAllowedOrigins: 'http://localhost:3000',
+     *   verbose: true
+     * });
+     * 
+     * // Register search handlers
+     * qido.onSearchForStudies((err, query) => {
+     *   if (err) throw err;
+     *   // Search database for studies matching query
+     *   const results = searchStudies(query);
+     *   return JSON.stringify(results);
+     * });
+     * 
+     * qido.onSearchForSeries((err, query) => {
+     *   if (err) throw err;
+     *   const results = searchSeries(query);
+     *   return JSON.stringify(results);
+     * });
+     * 
+     * qido.start();
+     * ```
+     */
     #[napi(constructor)]
-    pub fn new(port: u16) -> Result<Self> {
+    pub fn new(port: u16, config: Option<QidoServerConfig>) -> Result<Self> {
+        let config = config.unwrap_or(QidoServerConfig {
+            enable_cors: Some(false),
+            cors_allowed_origins: None,
+            verbose: Some(false),
+        });
+        
         Ok(Self {
             port,
+            config,
             search_for_studies_handler: Arc::new(RwLock::new(None)),
             search_for_series_handler: Arc::new(RwLock::new(None)),
             search_for_study_instances_handler: Arc::new(RwLock::new(None)),
@@ -497,7 +606,7 @@ impl QidoServer {
 
     /// Register handler for "Search for Studies" query (GET /studies)
     /// Callback receives SearchForStudiesQuery and returns JSON string array
-    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForStudiesQuery) => string")]
+    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForStudiesQuery) => string | Promise<string>")]
     pub fn on_search_for_studies(&mut self, callback: SearchForStudiesHandler) -> Result<()> {
         RUNTIME.block_on(async {
             let mut handler = self.search_for_studies_handler.write().await;
@@ -508,7 +617,7 @@ impl QidoServer {
 
     /// Register handler for "Search for Series" query (GET /studies/{uid}/series)
     /// Callback receives SearchForSeriesQuery and returns JSON string array
-    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForSeriesQuery) => string")]
+    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForSeriesQuery) => string | Promise<string>")]
     pub fn on_search_for_series(&mut self, callback: SearchForSeriesHandler) -> Result<()> {
         RUNTIME.block_on(async {
             let mut handler = self.search_for_series_handler.write().await;
@@ -519,7 +628,7 @@ impl QidoServer {
 
     /// Register handler for "Search for Instances" in a Study (GET /studies/{uid}/instances)
     /// Callback receives SearchForStudyInstancesQuery and returns JSON string array
-    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string")]
+    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string | Promise<string>")]
     pub fn on_search_for_study_instances(&mut self, callback: SearchForStudyInstancesHandler) -> Result<()> {
         RUNTIME.block_on(async {
             let mut handler = self.search_for_study_instances_handler.write().await;
@@ -530,7 +639,7 @@ impl QidoServer {
 
     /// Register handler for "Search for Instances" in a Series (GET /studies/{uid}/series/{uid}/instances)
     /// Callback receives SearchForSeriesInstancesQuery and returns JSON string array
-    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string")]
+    #[napi(ts_args_type = "callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string | Promise<string>")]
     pub fn on_search_for_series_instances(&mut self, callback: SearchForSeriesInstancesHandler) -> Result<()> {
         RUNTIME.block_on(async {
             let mut handler = self.search_for_series_instances_handler.write().await;
@@ -543,6 +652,7 @@ impl QidoServer {
     #[napi]
     pub fn start(&mut self) -> Result<()> {
         let port = self.port;
+        let config = self.config.clone();
         let studies_handler = self.search_for_studies_handler.clone();
         let series_handler = self.search_for_series_handler.clone();
         let study_instances_handler = self.search_for_study_instances_handler.clone();
@@ -551,10 +661,42 @@ impl QidoServer {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         self.shutdown_tx = Some(shutdown_tx);
         
-        eprintln!("Starting QIDO server on port {}...", port);
+        if config.verbose.unwrap_or(false) {
+            eprintln!("Starting QIDO server on port {}...", port);
+            if config.enable_cors.unwrap_or(false) {
+                eprintln!("  CORS enabled: {}", 
+                    config.cors_allowed_origins.as_ref()
+                        .map(|s| s.as_str())
+                        .unwrap_or("* (all origins)"));
+            }
+        }
         
         // Spawn server task in RUNTIME (same pattern as StoreSCP)
         RUNTIME.spawn(async move {
+            // CORS configuration
+            let cors = if config.enable_cors.unwrap_or(false) {
+                let mut cors_builder = warp::cors()
+                    .allow_methods(vec!["GET", "OPTIONS"])
+                    .allow_headers(vec!["Content-Type", "Accept", "Authorization"]);
+                
+                // Configure allowed origins
+                if let Some(origins) = &config.cors_allowed_origins {
+                    // Parse comma-separated origins
+                    let origin_list: Vec<&str> = origins.split(',').map(|s| s.trim()).collect();
+                    for origin in origin_list {
+                        cors_builder = cors_builder.allow_origin(origin);
+                    }
+                } else {
+                    // Allow all origins if none specified
+                    cors_builder = cors_builder.allow_any_origin();
+                }
+                
+                cors_builder
+            } else {
+                // CORS disabled - restrictive default
+                warp::cors().allow_any_origin()
+            };
+            
             // GET /studies - Search for Studies
             let studies_route = warp::path!("studies")
                 .and(warp::get())
@@ -586,7 +728,8 @@ impl QidoServer {
             let routes = studies_route
                 .or(series_route)
                 .or(study_instances_route)
-                .or(series_instances_route);
+                .or(series_instances_route)
+                .with(cors);
             
             let (_addr, server) = warp::serve(routes)
                 .bind_with_graceful_shutdown(([0, 0, 0, 0], port), async {
@@ -837,3 +980,332 @@ async fn handle_response(
         }
     }
 }
+
+// ============================================================================
+// QIDO-RS CORS Configuration Guide
+// ============================================================================
+
+/*
+ * QIDO-RS CORS (Cross-Origin Resource Sharing) Configuration
+ * 
+ * This module provides CORS support for QIDO-RS servers to enable web-based
+ * DICOM applications to query medical imaging data from different origins.
+ * 
+ * ## DICOM Standard Reference
+ * - **DICOM PS3.18 Section 10:** QIDO-RS (Query based on ID for DICOM Objects)
+ * - **W3C CORS Specification:** https://www.w3.org/TR/cors/
+ * 
+ * ## What is CORS?
+ * 
+ * Cross-Origin Resource Sharing (CORS) is a security mechanism that allows
+ * web applications running at one origin (domain) to access resources from
+ * a different origin. Browsers enforce the Same-Origin Policy (SOP) by default,
+ * which blocks cross-origin requests unless the server explicitly allows them
+ * via CORS headers.
+ * 
+ * ## When to Enable CORS
+ * 
+ * Enable CORS when your QIDO-RS server needs to be accessed by:
+ * 
+ * 1. **Web-based DICOM Viewers:**
+ *    - OHIF Viewer (https://ohif.org)
+ *    - Cornerstone-based applications
+ *    - Radiant DICOM Viewer web interface
+ *    - Custom React/Vue/Angular medical imaging apps
+ * 
+ * 2. **Single-Page Applications (SPAs):**
+ *    - Frontend served from different domain than PACS/QIDO server
+ *    - Development environments (frontend: localhost:3000, backend: localhost:8042)
+ *    - Microservices architecture with separate services
+ * 
+ * 3. **Mobile Applications:**
+ *    - Hybrid apps using WebView (React Native, Ionic, Cordova)
+ *    - Progressive Web Apps (PWAs) accessing DICOM services
+ * 
+ * 4. **Integration Scenarios:**
+ *    - Hospital portals embedding DICOM viewers
+ *    - Telemedicine platforms accessing imaging studies
+ *    - Research platforms with web-based analysis tools
+ * 
+ * ## CORS Configuration Options
+ * 
+ * The `QidoServerConfig` object supports the following CORS options:
+ * 
+ * ### 1. `enableCors` (boolean, default: false)
+ * 
+ * Master switch to enable/disable CORS support.
+ * 
+ * ```typescript
+ * // CORS disabled (default) - restrictive, internal network only
+ * const qido = new QidoServer(8042, {
+ *   enableCors: false
+ * });
+ * 
+ * // CORS enabled - allows cross-origin requests
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true
+ * });
+ * ```
+ * 
+ * ### 2. `corsAllowedOrigins` (string, optional)
+ * 
+ * Comma-separated list of allowed origins. If not specified, allows all origins (*).
+ * 
+ * **Recommended for Production:** Always specify exact origins in production.
+ * 
+ * ```typescript
+ * // Allow single origin
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'https://viewer.hospital.com'
+ * });
+ * 
+ * // Allow multiple origins (comma-separated)
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'https://viewer.hospital.com,https://app.hospital.com,https://research.hospital.com'
+ * });
+ * 
+ * // Allow all origins (development only!)
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: undefined  // or omit this property
+ * });
+ * ```
+ * 
+ * ### 3. `verbose` (boolean, default: false)
+ * 
+ * Enable verbose logging to see CORS configuration at startup.
+ * 
+ * ```typescript
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'https://viewer.hospital.com',
+ *   verbose: true  // Log CORS configuration
+ * });
+ * ```
+ * 
+ * ## CORS Headers Sent by QIDO-RS
+ * 
+ * When CORS is enabled, the server automatically adds these headers:
+ * 
+ * - **Access-Control-Allow-Origin:** Allowed origin(s)
+ * - **Access-Control-Allow-Methods:** GET, OPTIONS
+ * - **Access-Control-Allow-Headers:** Content-Type, Accept, Authorization
+ * 
+ * ## Security Best Practices
+ * 
+ * ### 1. Production Deployments
+ * 
+ * **DO:**
+ * - Always specify exact allowed origins
+ * - Use HTTPS for all production endpoints
+ * - Implement authentication/authorization with CORS
+ * - Regularly review and update allowed origins
+ * - Monitor CORS errors in logs
+ * 
+ * **DON'T:**
+ * - Use wildcard (*) in production
+ * - Allow HTTP origins in production (HTTPS only)
+ * - Disable CORS without firewall protection
+ * - Share credentials across untrusted origins
+ * 
+ * ```typescript
+ * // ✅ GOOD: Production configuration
+ * const qido = new QidoServer(443, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'https://viewer.hospital.com',
+ *   verbose: false
+ * });
+ * 
+ * // ❌ BAD: Insecure production configuration
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   // No corsAllowedOrigins specified = allows all origins!
+ *   verbose: false
+ * });
+ * ```
+ * 
+ * ### 2. Development Environments
+ * 
+ * For local development, you can use more permissive CORS settings:
+ * 
+ * ```typescript
+ * // Development: Allow localhost origins
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'http://localhost:3000,http://localhost:5173',
+ *   verbose: true
+ * });
+ * ```
+ * 
+ * ### 3. Network Segmentation
+ * 
+ * If your QIDO server is only accessible within a hospital network,
+ * you may choose to disable CORS and rely on network-level security:
+ * 
+ * ```typescript
+ * // Internal network only - no CORS needed
+ * const qido = new QidoServer(8042, {
+ *   enableCors: false  // Network firewall provides security
+ * });
+ * ```
+ * 
+ * ## Complete Usage Examples
+ * 
+ * ### Example 1: OHIF Viewer Integration
+ * 
+ * ```typescript
+ * import { QidoServer } from '@nuxthealth/node-dicom';
+ * 
+ * // QIDO server for OHIF Viewer
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'http://localhost:3000',  // OHIF development server
+ *   verbose: true
+ * });
+ * 
+ * qido.onSearchForStudies((err, query) => {
+ *   if (err) throw err;
+ *   
+ *   // Query your PACS/database
+ *   const studies = database.searchStudies({
+ *     patientName: query.PatientName,
+ *     studyDate: query.StudyDate,
+ *     limit: query.limit || 25
+ *   });
+ *   
+ *   // Return DICOM JSON (PS3.18 Section F.2)
+ *   return JSON.stringify(studies);
+ * });
+ * 
+ * qido.start();
+ * ```
+ * 
+ * ### Example 2: Multi-Origin Production Setup
+ * 
+ * ```typescript
+ * // Production: Multiple hospital viewer origins
+ * const qido = new QidoServer(443, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: [
+ *     'https://radiology.hospital.com',
+ *     'https://cardiology.hospital.com',
+ *     'https://oncology.hospital.com'
+ *   ].join(','),
+ *   verbose: false
+ * });
+ * 
+ * // Register handlers...
+ * qido.start();
+ * ```
+ * 
+ * ### Example 3: Development with Hot Reload
+ * 
+ * ```typescript
+ * // Development with Vite/React hot reload
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'http://localhost:5173,http://127.0.0.1:5173',
+ *   verbose: true
+ * });
+ * 
+ * qido.start();
+ * console.log('🔥 QIDO-RS server ready for hot reload development');
+ * ```
+ * 
+ * ## Testing CORS Configuration
+ * 
+ * ### Using curl
+ * 
+ * ```bash
+ * # Test preflight OPTIONS request
+ * curl -X OPTIONS \
+ *      -H "Origin: http://localhost:3000" \
+ *      -H "Access-Control-Request-Method: GET" \
+ *      -H "Access-Control-Request-Headers: Content-Type" \
+ *      -v http://localhost:8042/studies
+ * 
+ * # Test actual GET request with CORS
+ * curl -H "Origin: http://localhost:3000" \
+ *      -v http://localhost:8042/studies?limit=10
+ * 
+ * # Check for Access-Control-Allow-Origin header in response
+ * ```
+ * 
+ * ### Using Browser DevTools
+ * 
+ * Open browser console and test:
+ * 
+ * ```javascript
+ * // This will fail if CORS is not properly configured
+ * fetch('http://localhost:8042/studies?limit=10')
+ *   .then(res => res.json())
+ *   .then(data => console.log('QIDO Studies:', data))
+ *   .catch(err => console.error('CORS Error:', err));
+ * ```
+ * 
+ * ## Troubleshooting CORS Issues
+ * 
+ * ### Error: "No 'Access-Control-Allow-Origin' header"
+ * 
+ * **Cause:** CORS not enabled on server
+ * 
+ * **Solution:**
+ * ```typescript
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true  // Enable CORS
+ * });
+ * ```
+ * 
+ * ### Error: "CORS policy: The 'Access-Control-Allow-Origin' header has a value that is not equal to the supplied origin"
+ * 
+ * **Cause:** Your origin is not in the allowed origins list
+ * 
+ * **Solution:**
+ * ```typescript
+ * const qido = new QidoServer(8042, {
+ *   enableCors: true,
+ *   corsAllowedOrigins: 'http://your-actual-origin.com'  // Add your origin
+ * });
+ * ```
+ * 
+ * ### Error: Requests work in Postman/curl but fail in browser
+ * 
+ * **Cause:** Browsers enforce CORS, command-line tools don't
+ * 
+ * **Solution:** Configure CORS properly for browser access
+ * 
+ * ## Related Documentation
+ * 
+ * - DICOM PS3.18 QIDO-RS: https://dicom.nema.org/medical/dicom/current/output/html/part18.html#sect_10
+ * - MDN CORS Guide: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
+ * - OHIF Configuration: https://docs.ohif.org/
+ * 
+ * ## TypeScript Type Definitions
+ * 
+ * ```typescript
+ * interface QidoServerConfig {
+ *   // Enable CORS headers
+ *   enableCors?: boolean;
+ *   
+ *   // Comma-separated list of allowed origins
+ *   // Example: "https://viewer.hospital.com,https://app.hospital.com"
+ *   // If omitted when CORS is enabled, allows all origins (*)
+ *   corsAllowedOrigins?: string;
+ *   
+ *   // Enable verbose logging
+ *   verbose?: boolean;
+ * }
+ * 
+ * class QidoServer {
+ *   constructor(port: number, config?: QidoServerConfig);
+ *   onSearchForStudies(callback: (err: Error | null, query: SearchForStudiesQuery) => string): void;
+ *   onSearchForSeries(callback: (err: Error | null, query: SearchForSeriesQuery) => string): void;
+ *   onSearchForStudyInstances(callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string): void;
+ *   onSearchForSeriesInstances(callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string): void;
+ *   start(): void;
+ *   stop(): void;
+ * }
+ * ```
+ */

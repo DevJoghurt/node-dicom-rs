@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PACS SQLite Example</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      line-height: 1.6;
+      color: #333;
+    }
+    
+    h1 {
+      color: #2563eb;
+      border-bottom: 3px solid #2563eb;
+      padding-bottom: 10px;
+    }
+    
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 20px;
+      margin: 30px 0;
+    }
+    
+    .status-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    
+    .status-card h3 {
+      margin-top: 0;
+      color: #1e293b;
+    }
+    
+    .status-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    
+    .status-ok { background: #10b981; }
+    .status-error { background: #ef4444; }
+    .status-pending { background: #f59e0b; }
+    
+    .button {
+      display: inline-block;
+      background: #2563eb;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 6px;
+      text-decoration: none;
+      margin: 10px 10px 10px 0;
+      transition: background 0.2s;
+    }
+    
+    .button:hover {
+      background: #1d4ed8;
+    }
+    
+    .button-secondary {
+      background: #64748b;
+    }
+    
+    .button-secondary:hover {
+      background: #475569;
+    }
+    
+    pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    
+    code {
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 14px;
+    }
+    
+    .info-box {
+      background: #dbeafe;
+      border-left: 4px solid #2563eb;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🏥 PACS SQLite Example</h1>
+  
+  <p>Complete PACS implementation using Vite, Nitro v3, SQLite, and OHIF Viewer.</p>
+  
+  <div class="status-grid">
+    <div class="status-card">
+      <h3><span class="status-indicator status-ok"></span>StoreSCP</h3>
+      <p>Port: <strong>11112</strong></p>
+      <p>AE Title: <strong>PACS_SQLITE</strong></p>
+      <p>Status: Running</p>
+    </div>
+    
+    <div class="status-card">
+      <h3><span class="status-indicator status-ok"></span>QIDO-RS</h3>
+      <p>Port: <strong>8042</strong></p>
+      <p>Endpoint: <a href="http://localhost:8042/dicomweb/studies" target="_blank">Query Studies</a></p>
+      <p>Status: Running</p>
+    </div>
+    
+    <div class="status-card">
+      <h3><span class="status-indicator status-ok"></span>WADO-RS</h3>
+      <p>Port: <strong>8043</strong></p>
+      <p>Endpoint: Retrieval Service</p>
+      <p>Status: Running</p>
+    </div>
+    
+    <div class="status-card">
+      <h3><span class="status-indicator status-ok"></span>Database</h3>
+      <p>Type: <strong>SQLite</strong></p>
+      <p>Location: <code>data/pacs.db</code></p>
+      <p id="db-stats">Loading stats...</p>
+    </div>
+  </div>
+  
+  <div class="info-box">
+    <strong>📖 Quick Start:</strong>
+    <ol>
+      <li>Send DICOM files: <code>node scripts/send-test-files.mjs ./playground/testdata</code></li>
+      <li>Query studies: <code>node scripts/query-studies.mjs</code></li>
+      <li>Inspect database: <code>node scripts/inspect-db.mjs</code></li>
+    </ol>
+  </div>
+  
+  <h2>Actions</h2>
+  
+  <a href="http://localhost:8042/dicomweb/studies" class="button" target="_blank">
+    📋 Query Studies (QIDO-RS)
+  </a>
+  
+  <a href="/viewer" class="button">
+    🔬 Open DICOM Viewer
+  </a>
+  
+  <h2>Send Test Files</h2>
+  
+  <p>Use StoreSCU to send DICOM files to the PACS:</p>
+  
+  <pre><code># Send all files from a directory
+node scripts/send-test-files.mjs ./playground/testdata
+
+# Or use the existing playground test data
+node scripts/send-test-files.mjs ../playground/testdata</code></pre>
+  
+  <h2>API Endpoints</h2>
+  
+  <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+    <thead>
+      <tr style="background: #f1f5f9;">
+        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #cbd5e1;">Service</th>
+        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #cbd5e1;">Endpoint</th>
+        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #cbd5e1;">Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">StoreSCP</td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;"><code>DICOM:11112</code></td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">Receive DICOM files via C-STORE</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">QIDO-RS</td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;"><code>GET /dicomweb/studies</code></td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">Search for studies</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">WADO-RS</td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;"><code>GET /dicomweb/studies/{study}/series/{series}/instances/{instance}</code></td>
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0;">Retrieve DICOM instances</td>
+      </tr>
+    </tbody>
+  </table>
+  
+  <h2>Documentation</h2>
+  
+  <p>For complete documentation, see <code>README.md</code></p>
+  
+  <script>
+    // Load database stats
+    async function loadStats() {
+      try {
+        const response = await fetch('http://localhost:8042/dicomweb/studies');
+        const studies = await response.json();
+        
+        const totalInstances = studies.reduce((sum, study) => {
+          const count = study['00201208']?.Value?.[0] || 0;
+          return sum + parseInt(count);
+        }, 0);
+        
+        document.getElementById('db-stats').innerHTML = `
+          Studies: <strong>${studies.length}</strong><br>
+          Instances: <strong>${totalInstances}</strong>
+        `;
+      } catch (error) {
+        document.getElementById('db-stats').textContent = 'Unable to load stats';
+      }
+    }
+    
+    loadStats();
+  </script>
+</body>
+</html>

@@ -36,6 +36,8 @@ async-trait = "0.1.89"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio = { version = "1.48.0", features = ["full"] }
 warp = "0.3"
+uuid = { version = "1.11.0", features = ["v4"] }
+image = "0.25"
 
 [build-dependencies]
 napi-build = "2"

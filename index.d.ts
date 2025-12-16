@@ -462,17 +462,19 @@ export declare class DicomFile {
    *
    * This method combines decoding with optional processing steps like frame extraction,
    * windowing (VOI LUT), and 8-bit conversion. Returns processed pixel data in-memory
-   * without file I/O. Requires the 'transcode' feature to be enabled at build time.
+   * without file I/O. Uses the shared image processing utility for consistent behavior
+   * across WADO-RS and DicomFile APIs.
    *
    * **Processing Pipeline:**
    * 1. Decode/decompress pixel data
-   * 2. Extract specific frame (if frameNumber specified)
+   * 2. Apply rescale (slope/intercept) if present
    * 3. Apply windowing/VOI LUT (if requested)
-   * 4. Convert to 8-bit (if requested)
+   * 4. Extract specific frame (if frameNumber specified)
+   * 5. Convert to 8-bit (if requested)
    *
    * @param options - Processing options (all optional)
-   * @returns Buffer containing processed pixel data
-   * @throws Error if no file is opened, transcode feature not enabled, or processing fails
+   * @returns Buffer containing processed pixel data (raw bytes, not encoded image)
+   * @throws Error if no file is opened or processing fails
    *
    * @example
    * ```typescript
@@ -561,27 +563,110 @@ export declare class QidoSeriesResult {
 
 /** QIDO-RS Server (using warp + RUNTIME pattern like StoreSCP) */
 export declare class QidoServer {
-  constructor(port: number)
+  /** * Create a new QIDO-RS server.
+   *
+   * QIDO-RS (Query based on ID for DICOM Objects) is the query service of DICOMweb.
+   * It provides RESTful endpoints for searching DICOM studies, series, and instances.
+   *
+   * **DICOM Standard Reference:** PS3.18 Section 10 - QIDO-RS
+   *
+   * ## CORS Configuration
+   *
+   * CORS (Cross-Origin Resource Sharing) is essential for web applications that need to
+   * query DICOM data from a different domain than the QIDO-RS server.
+   *
+   * ### When to Enable CORS:
+   * - Web-based DICOM viewers (e.g., OHIF Viewer, Cornerstone-based apps)
+   * - Single-page applications (SPAs) accessing PACS from different origin
+   * - Development environments with separate frontend/backend servers
+   * - Mobile apps using WebView accessing DICOM services
+   *
+   * ### Security Considerations:
+   * - **Production:** Specify exact allowed origins in `cors_allowed_origins`
+   * - **Development:** Can use wildcard (*) but NOT recommended for production
+   * - Always use HTTPS in production to prevent MITM attacks
+   * - Consider implementing authentication/authorization with CORS
+   *
+   * @param port - Port number to listen on (e.g., 8042 for PACS, 8080 for testing)
+   * @param config - Server configuration including CORS settings
+   * @returns QidoServer instance
+   *
+   * @example
+   * ```typescript
+   * // Basic server without CORS (internal network only)
+   * const qido = new QidoServer(8042, {
+   *   verbose: true
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Development server with CORS enabled (allows all origins)
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   verbose: true
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Production server with specific allowed origins
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   corsAllowedOrigins: 'https://viewer.hospital.com,https://app.hospital.com',
+   *   verbose: false
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Complete QIDO-RS server with handlers
+   * import { QidoServer } from '@nuxthealth/node-dicom';
+   *
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   corsAllowedOrigins: 'http://localhost:3000',
+   *   verbose: true
+   * });
+   *
+   * // Register search handlers
+   * qido.onSearchForStudies((err, query) => {
+   *   if (err) throw err;
+   *   // Search database for studies matching query
+   *   const results = searchStudies(query);
+   *   return JSON.stringify(results);
+   * });
+   *
+   * qido.onSearchForSeries((err, query) => {
+   *   if (err) throw err;
+   *   const results = searchSeries(query);
+   *   return JSON.stringify(results);
+   * });
+   *
+   * qido.start();
+   * ```
+   */
+  constructor(port: number, config?: QidoServerConfig | undefined | null)
   /**
    * Register handler for "Search for Studies" query (GET /studies)
    * Callback receives SearchForStudiesQuery and returns JSON string array
    */
-  onSearchForStudies(callback: (err: Error | null, query: SearchForStudiesQuery) => string): void
+  onSearchForStudies(callback: (err: Error | null, query: SearchForStudiesQuery) => string | Promise<string>): void
   /**
    * Register handler for "Search for Series" query (GET /studies/{uid}/series)
    * Callback receives SearchForSeriesQuery and returns JSON string array
    */
-  onSearchForSeries(callback: (err: Error | null, query: SearchForSeriesQuery) => string): void
+  onSearchForSeries(callback: (err: Error | null, query: SearchForSeriesQuery) => string | Promise<string>): void
   /**
    * Register handler for "Search for Instances" in a Study (GET /studies/{uid}/instances)
    * Callback receives SearchForStudyInstancesQuery and returns JSON string array
    */
-  onSearchForStudyInstances(callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string): void
+  onSearchForStudyInstances(callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string | Promise<string>): void
   /**
    * Register handler for "Search for Instances" in a Series (GET /studies/{uid}/series/{uid}/instances)
    * Callback receives SearchForSeriesInstancesQuery and returns JSON string array
    */
-  onSearchForSeriesInstances(callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string): void
+  onSearchForSeriesInstances(callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string | Promise<string>): void
   /** Start the QIDO server using RUNTIME pattern like StoreSCP */
   start(): void
   /** Stop the QIDO server */
@@ -1109,6 +1194,15 @@ export declare class StoreScu {
    * ```
    */
   send(callbacks?: { onTransferStarted?: (err: Error | null, event: TransferStartedEvent) => void, onFileSending?: (err: Error | null, event: FileSendingEvent) => void, onFileSent?: (err: Error | null, event: FileSentEvent) => void, onFileError?: (err: Error | null, event: FileErrorEvent) => void, onTransferCompleted?: (err: Error | null, event: TransferCompletedEvent) => void }): Promise<Array<ResultObject>>
+}
+
+/** WADO-RS Server */
+export declare class WadoServer {
+  constructor(port: number, config: WadoServerConfig)
+  /** Start the WADO-RS server */
+  start(): void
+  /** Stop the WADO-RS server */
+  stop(): void
 }
 
 /** Abstract syntax (SOP Class) acceptance mode */
@@ -1774,6 +1868,23 @@ export interface PixelDataProcessingOptions {
   convertTo8Bit?: boolean
 }
 
+/** QIDO-RS Server Configuration */
+export interface QidoServerConfig {
+  /**
+   * Enable CORS (Cross-Origin Resource Sharing) headers
+   * Default: false
+   */
+  enableCors?: boolean
+  /**
+   * CORS allowed origins (comma-separated list of origins)
+   * Examples: "http://localhost:3000", "https://example.com,https://app.example.com"
+   * If not specified, allows all origins (*) when CORS is enabled
+   */
+  corsAllowedOrigins?: string
+  /** Enable verbose logging for debugging */
+  verbose?: boolean
+}
+
 /** * Result of a DICOM transfer operation.
  *
  * Returned by the `send()` method to indicate the outcome of the transfer.
@@ -2304,4 +2415,94 @@ export declare const enum TransferSyntaxMode {
   UncompressedOnly = 'UncompressedOnly',
   /** Accept only specified transfer syntaxes */
   Custom = 'Custom'
+}
+
+/** Media types supported for DICOM retrieval */
+export declare const enum WadoMediaType {
+  /** application/dicom - Full DICOM files */
+  Dicom = 'Dicom',
+  /** application/dicom+json - DICOM JSON metadata */
+  DicomJson = 'DicomJson',
+  /** application/dicom+xml - DICOM XML metadata */
+  DicomXml = 'DicomXml'
+}
+
+/** Frame rendering quality for thumbnail/rendered endpoints */
+export interface WadoRenderingOptions {
+  /** JPEG quality (1-100, default: 90) */
+  quality?: number
+  /** Output width in pixels (maintains aspect ratio if only one dimension specified) */
+  width?: number
+  /** Output height in pixels */
+  height?: number
+  /** Window center for grayscale images */
+  windowCenter?: number
+  /** Window width for grayscale images */
+  windowWidth?: number
+}
+
+/** WADO-RS Server Configuration */
+export interface WadoServerConfig {
+  /** Storage backend type */
+  storageType: WadoStorageType
+  /**
+   * Base path for filesystem storage (required for Filesystem)
+   * Files should be organized as: {base_path}/{studyUID}/{seriesUID}/{instanceUID}.dcm
+   */
+  basePath?: string
+  /** S3 configuration (required for S3) */
+  s3Config?: S3Config
+  /** Enable metadata endpoint (GET .../metadata) */
+  enableMetadata?: boolean
+  /** Enable frame retrieval (GET .../frames/{frameList}) */
+  enableFrames?: boolean
+  /** Enable rendered endpoint (GET .../rendered) */
+  enableRendered?: boolean
+  /** Enable thumbnail endpoint (GET .../thumbnail) */
+  enableThumbnail?: boolean
+  /** Enable bulkdata retrieval (GET .../bulkdata/{bulkdataUID}) */
+  enableBulkdata?: boolean
+  /** Default transcoding for pixel data */
+  defaultTranscoding?: WadoTranscoding
+  /** Maximum concurrent connections */
+  maxConnections?: number
+  /**
+   * Enable CORS (Cross-Origin Resource Sharing) headers
+   * Default: false
+   */
+  enableCors?: boolean
+  /**
+   * CORS allowed origins (comma-separated list of origins)
+   * Examples: "http://localhost:3000", "https://example.com,https://app.example.com"
+   * If not specified, allows all origins (*) when CORS is enabled
+   */
+  corsAllowedOrigins?: string
+  /** Enable compression (gzip) for responses */
+  enableCompression?: boolean
+  /** Default rendering options for thumbnails */
+  thumbnailOptions?: WadoRenderingOptions
+  /** Enable verbose logging */
+  verbose?: boolean
+}
+
+/** Storage backend type for WADO-RS */
+export declare const enum WadoStorageType {
+  /** Store files on local filesystem */
+  Filesystem = 'Filesystem',
+  /** Store files in S3-compatible object storage */
+  S3 = 'S3'
+}
+
+/** Pixel data transcoding options */
+export declare const enum WadoTranscoding {
+  /** No transcoding - return as stored */
+  None = 'None',
+  /** Transcode to JPEG baseline */
+  JpegBaseline = 'JpegBaseline',
+  /** Transcode to JPEG 2000 */
+  Jpeg2000 = 'Jpeg2000',
+  /** Transcode to PNG */
+  Png = 'Png',
+  /** Transcode to uncompressed */
+  Uncompressed = 'Uncompressed'
 }
