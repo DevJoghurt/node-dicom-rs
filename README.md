@@ -54,7 +54,7 @@ receiver.onStudyCompleted((err, event) => {
     console.log(`${study.series.length} series, total instances: ${study.series.reduce((sum, s) => sum + s.instances.length, 0)}`);
 });
 
-receiver.listen();
+receiver.start();
 ```
 
 ### Sending DICOM Files (StoreScu)
@@ -286,7 +286,7 @@ receiver.onBeforeStore((tags) => {
     };
 });
 
-await receiver.listen();
+receiver.start();
 ```
 
 **Key Features:**

@@ -4,10 +4,9 @@
  * Creates PACS database schema for storing DICOM metadata
  * Uses Nitro's useDatabase utility
  */
-import { definePlugin } from "nitro";
-import { useDatabase } from "nitro/database";
+import { defineNitroPlugin, useDatabase } from "#imports";
 
-export default definePlugin(async (nitroApp) => {
+export default defineNitroPlugin(async (nitroApp) => {
   console.log('[Database] Initializing SQLite PACS database...');
   
   // Initialize database using Nitro's useDatabase

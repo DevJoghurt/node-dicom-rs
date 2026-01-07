@@ -171,10 +171,11 @@ pub type InstanceAttributes = DicomJsonAttributes;
 // Callback Types for Each Query Level
 // ============================================================================
 
-type SearchForStudiesHandler = ThreadsafeFunction<SearchForStudiesQuery, String>;
-type SearchForSeriesHandler = ThreadsafeFunction<SearchForSeriesQuery, String>;
-type SearchForStudyInstancesHandler = ThreadsafeFunction<SearchForStudyInstancesQuery, String>;
-type SearchForSeriesInstancesHandler = ThreadsafeFunction<SearchForSeriesInstancesQuery, String>;
+// Using Promise<String> allows callbacks to be either sync or async
+type SearchForStudiesHandler = ThreadsafeFunction<SearchForStudiesQuery, Promise<String>>;
+type SearchForSeriesHandler = ThreadsafeFunction<SearchForSeriesQuery, Promise<String>>;
+type SearchForStudyInstancesHandler = ThreadsafeFunction<SearchForStudyInstancesQuery, Promise<String>>;
+type SearchForSeriesInstancesHandler = ThreadsafeFunction<SearchForSeriesInstancesQuery, Promise<String>>;
 
 // ============================================================================
 // High-Level Builder APIs - Hide DICOM JSON complexity
@@ -780,23 +781,36 @@ async fn handle_search_for_studies(
     let query: SearchForStudiesQuery = serde_json::from_value(serde_json::to_value(&params).unwrap())
         .unwrap_or_default();
     
-    // Create channel for response
-    let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<String, String>>();
+    // Call JS callback with async support
+    let promise = handler_arc.call_async(Ok(query));
     
-    // Call JS callback
-    let _status = handler_arc.call_with_return_value(
-        Ok(query),
-        ThreadsafeFunctionCallMode::Blocking,
-        move |result: std::result::Result<String, _>, _env| {
-            match result {
-                Ok(json_string) => { let _ = tx.send(Ok(json_string)); }
-                Err(e) => { let _ = tx.send(Err(format!("Callback error: {:?}", e))); }
+    // Await the Promise - works for both sync and async callbacks
+    match promise.await {
+        Ok(json_future) => {
+            match json_future.await {
+                Ok(json_string) => {
+                    match serde_json::from_str::<serde_json::Value>(&json_string) {
+                        Ok(json) => Ok(warp::reply::with_status(
+                            warp::reply::json(&json),
+                            warp::http::StatusCode::OK,
+                        )),
+                        Err(e) => Ok(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"error": format!("Invalid JSON: {}", e)})),
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
+                    }
+                }
+                Err(e) => Ok(warp::reply::with_status(
+                    warp::reply::json(&serde_json::json!({"error": format!("Promise rejected: {:?}", e)})),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ))
             }
-            Ok(())
         }
-    );
-    
-    handle_response(rx).await
+        Err(e) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"error": format!("Callback error: {:?}", e)})),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
+    }
 }
 
 /// Handler for GET /studies/{StudyInstanceUID}/series - Search for Series
@@ -828,21 +842,36 @@ async fn handle_search_for_series(
             q
         });
     
-    let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<String, String>>();
+    // Call JS callback with async support
+    let promise = handler_arc.call_async(Ok(query));
     
-    let _status = handler_arc.call_with_return_value(
-        Ok(query),
-        ThreadsafeFunctionCallMode::Blocking,
-        move |result: std::result::Result<String, _>, _env| {
-            match result {
-                Ok(json_string) => { let _ = tx.send(Ok(json_string)); }
-                Err(e) => { let _ = tx.send(Err(format!("Callback error: {:?}", e))); }
+    // Await the Promise - works for both sync and async callbacks
+    match promise.await {
+        Ok(json_future) => {
+            match json_future.await {
+                Ok(json_string) => {
+                    match serde_json::from_str::<serde_json::Value>(&json_string) {
+                        Ok(json) => Ok(warp::reply::with_status(
+                            warp::reply::json(&json),
+                            warp::http::StatusCode::OK,
+                        )),
+                        Err(e) => Ok(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"error": format!("Invalid JSON: {}", e)})),
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
+                    }
+                }
+                Err(e) => Ok(warp::reply::with_status(
+                    warp::reply::json(&serde_json::json!({"error": format!("Promise rejected: {:?}", e)})),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ))
             }
-            Ok(())
         }
-    );
-    
-    handle_response(rx).await
+        Err(e) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"error": format!("Callback error: {:?}", e)})),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
+    }
 }
 
 /// Handler for GET /studies/{StudyInstanceUID}/instances - Search for Instances in Study
@@ -873,21 +902,36 @@ async fn handle_search_for_study_instances(
             q
         });
     
-    let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<String, String>>();
+    // Call JS callback with async support
+    let promise = handler_arc.call_async(Ok(query));
     
-    let _status = handler_arc.call_with_return_value(
-        Ok(query),
-        ThreadsafeFunctionCallMode::Blocking,
-        move |result: std::result::Result<String, _>, _env| {
-            match result {
-                Ok(json_string) => { let _ = tx.send(Ok(json_string)); }
-                Err(e) => { let _ = tx.send(Err(format!("Callback error: {:?}", e))); }
+    // Await the Promise - works for both sync and async callbacks
+    match promise.await {
+        Ok(json_future) => {
+            match json_future.await {
+                Ok(json_string) => {
+                    match serde_json::from_str::<serde_json::Value>(&json_string) {
+                        Ok(json) => Ok(warp::reply::with_status(
+                            warp::reply::json(&json),
+                            warp::http::StatusCode::OK,
+                        )),
+                        Err(e) => Ok(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"error": format!("Invalid JSON: {}", e)})),
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
+                    }
+                }
+                Err(e) => Ok(warp::reply::with_status(
+                    warp::reply::json(&serde_json::json!({"error": format!("Promise rejected: {:?}", e)})),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ))
             }
-            Ok(())
         }
-    );
-    
-    handle_response(rx).await
+        Err(e) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"error": format!("Callback error: {:?}", e)})),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
+    }
 }
 
 /// Handler for GET /studies/{StudyInstanceUID}/series/{SeriesInstanceUID}/instances
@@ -921,63 +965,35 @@ async fn handle_search_for_series_instances(
             q
         });
     
-    let (tx, rx) = tokio::sync::oneshot::channel::<std::result::Result<String, String>>();
+    // Call JS callback with async support
+    let promise = handler_arc.call_async(Ok(query));
     
-    let _status = handler_arc.call_with_return_value(
-        Ok(query),
-        ThreadsafeFunctionCallMode::Blocking,
-        move |result: std::result::Result<String, _>, _env| {
-            match result {
-                Ok(json_string) => { let _ = tx.send(Ok(json_string)); }
-                Err(e) => { let _ = tx.send(Err(format!("Callback error: {:?}", e))); }
+    // Await the Promise - works for both sync and async callbacks
+    match promise.await {
+        Ok(json_future) => {
+            match json_future.await {
+                Ok(json_string) => {
+                    match serde_json::from_str::<serde_json::Value>(&json_string) {
+                        Ok(json) => Ok(warp::reply::with_status(
+                            warp::reply::json(&json),
+                            warp::http::StatusCode::OK,
+                        )),
+                        Err(e) => Ok(warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"error": format!("Invalid JSON: {}", e)})),
+                            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        ))
+                    }
+                }
+                Err(e) => Ok(warp::reply::with_status(
+                    warp::reply::json(&serde_json::json!({"error": format!("Promise rejected: {:?}", e)})),
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ))
             }
-            Ok(())
         }
-    );
-    
-    handle_response(rx).await
-}
-
-/// Shared response handler - converts String response to warp Reply
-async fn handle_response(
-    rx: tokio::sync::oneshot::Receiver<std::result::Result<String, String>>,
-) -> std::result::Result<warp::reply::WithStatus<warp::reply::Json>, warp::Rejection> {
-    let response_json = match tokio::time::timeout(tokio::time::Duration::from_secs(5), rx).await {
-        Ok(Ok(Ok(json))) => json,
-        Ok(Ok(Err(e))) => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&serde_json::json!({"error": e})),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ));
-        }
-        Ok(Err(_)) => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&serde_json::json!({"error": "Channel closed"})),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ));
-        }
-        Err(_) => {
-            return Ok(warp::reply::with_status(
-                warp::reply::json(&serde_json::json!({"error": "Timeout"})),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ));
-        }
-    };
-    
-    // Parse and return as DICOM JSON
-    match serde_json::from_str::<serde_json::Value>(&response_json) {
-        Ok(json) => {
-            Ok(warp::reply::with_status(
-                warp::reply::json(&json),
-                warp::http::StatusCode::OK,
-            ))
-        }
-        Err(e) => {
-            Ok(warp::reply::with_status(
-                warp::reply::json(&serde_json::json!({"error": format!("Invalid JSON: {}", e)})),
-                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ))
-        }
+        Err(e) => Ok(warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"error": format!("Callback error: {:?}", e)})),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
     }
 }
 

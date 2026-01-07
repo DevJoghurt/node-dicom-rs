@@ -9,8 +9,7 @@ import { StoreScp, getCommonTagSets, combineTags } from '@nuxthealth/node-dicom'
 import { join } from 'path';
 import { mkdirSync } from 'fs';
 import crypto from 'crypto';
-import { definePlugin } from "nitro";
-import { useDatabase } from "nitro/database";
+import { defineNitroPlugin, useDatabase } from "#imports";
 
 const STORESCP_PORT: number = 11112;
 const STORESCP_AET: string = 'PACS_SQLITE';
@@ -66,7 +65,7 @@ function generateFakePatientData(patientID: string | undefined): FakePatientData
   };
 }
 
-export default definePlugin(async (nitroApp) => {
+export default defineNitroPlugin(async (nitroApp) => {
   console.log('[StoreSCP] Starting DICOM C-STORE receiver...');
   
   // Create storage directory
@@ -82,20 +81,47 @@ export default definePlugin(async (nitroApp) => {
     tagSets.imagePixelInfo
   ]);
   
+  // DEBUG: Log extraction tags
+  console.log('[StoreSCP] Configured with', extractionTags.length, 'tags:', extractionTags.slice(0, 10), '...');
+  
   // Create StoreSCP instance with correct options format
   const storeScp = new StoreScp({
     port: STORESCP_PORT,
     callingAeTitle: STORESCP_AET,
     outDir: DICOM_STORAGE_PATH,
-    verbose: true,
+    verbose: false,
     extractTags: extractionTags,
     storeWithFileMeta: true,
     studyTimeout: 30
   });
   
   // Anonymize before storing
-  storeScp.onBeforeStore((tags: Record<string, string>) => {
+  storeScp.onBeforeStore((err: Error | null, tags: Record<string, string>) => {
+    if (err) {
+      console.error('[StoreSCP] onBeforeStore error:', err);
+      return {};
+    }
+    
     try {
+      // Debug: Log what we actually received
+      console.log('[StoreSCP] onBeforeStore called with:', {
+        type: typeof tags,
+        isNull: tags === null,
+        isUndefined: tags === undefined,
+        keys: tags ? Object.keys(tags) : 'N/A',
+        length: tags ? Object.keys(tags).length : 'N/A',
+        value: tags
+      });
+      
+      // Validate tags object
+      if (!tags || typeof tags !== 'object' || Object.keys(tags).length === 0) {
+        console.warn('[StoreSCP] Invalid or empty tags, returning empty object');
+        return {}; // Return empty object, not null
+      }
+      
+      // Log received tag keys
+      console.log('[StoreSCP] onBeforeStore received', Object.keys(tags).length, 'tags');
+      
       // Extract original patient ID
       const originalPatientID: string = tags.PatientID || 'UNKNOWN';
       
@@ -131,22 +157,38 @@ export default definePlugin(async (nitroApp) => {
       // Extract metadata from event data
       const tags: Record<string, any> = event.data?.tags || {};
       
+      // Log received tags for debugging
+      console.log('[StoreSCP] onFileStored received tags:', Object.keys(tags));
+      console.log('[StoreSCP] Sample tags:', {
+        StudyInstanceUID: tags.StudyInstanceUID,
+        SeriesInstanceUID: tags.SeriesInstanceUID,
+        SOPInstanceUID: tags.SOPInstanceUID,
+        PatientName: tags.PatientName
+      });
+      
+      // Validate required tags
+      if (!tags.StudyInstanceUID || !tags.SeriesInstanceUID || !tags.SOPInstanceUID) {
+        console.error('[StoreSCP] Missing required UIDs, skipping database insert');
+        console.error('[StoreSCP] Available keys:', Object.keys(tags));
+        return;
+      }
+      
       // Insert or update study
       await db.sql`
         INSERT OR REPLACE INTO studies (
           study_instance_uid, patient_name, patient_id, patient_birth_date, patient_sex,
           study_date, study_time, study_description, accession_number, modalities_in_study
         ) VALUES (
-          ${tags.StudyInstanceUID},
-          ${tags.PatientName},
-          ${tags.PatientID},
-          ${tags.PatientBirthDate},
-          ${tags.PatientSex},
-          ${tags.StudyDate},
-          ${tags.StudyTime},
-          ${tags.StudyDescription},
-          ${tags.AccessionNumber},
-          ${tags.Modality}
+          ${tags.StudyInstanceUID || null},
+          ${tags.PatientName || null},
+          ${tags.PatientID || null},
+          ${tags.PatientBirthDate || null},
+          ${tags.PatientSex || null},
+          ${tags.StudyDate || null},
+          ${tags.StudyTime || null},
+          ${tags.StudyDescription || null},
+          ${tags.AccessionNumber || null},
+          ${tags.Modality || null}
         )
       `;
       
@@ -156,11 +198,11 @@ export default definePlugin(async (nitroApp) => {
           series_instance_uid, study_instance_uid, modality,
           series_number, series_description
         ) VALUES (
-          ${tags.SeriesInstanceUID},
-          ${tags.StudyInstanceUID},
-          ${tags.Modality},
-          ${tags.SeriesNumber},
-          ${tags.SeriesDescription}
+          ${tags.SeriesInstanceUID || null},
+          ${tags.StudyInstanceUID || null},
+          ${tags.Modality || null},
+          ${tags.SeriesNumber || null},
+          ${tags.SeriesDescription || null}
         )
       `;
       
@@ -171,15 +213,15 @@ export default definePlugin(async (nitroApp) => {
           sop_class_uid, instance_number, file_path,
           rows, columns, bits_allocated
         ) VALUES (
-          ${tags.SOPInstanceUID},
-          ${tags.SeriesInstanceUID},
-          ${tags.StudyInstanceUID},
-          ${tags.SOPClassUID},
-          ${tags.InstanceNumber},
-          ${event.data?.file || ''},
-          ${tags.Rows},
-          ${tags.Columns},
-          ${tags.BitsAllocated}
+          ${tags.SOPInstanceUID || null},
+          ${tags.SeriesInstanceUID || null},
+          ${tags.StudyInstanceUID || null},
+          ${tags.SOPClassUID || null},
+          ${tags.InstanceNumber || null},
+          ${event.data?.file || null},
+          ${tags.Rows || null},
+          ${tags.Columns || null},
+          ${tags.BitsAllocated || null}
         )
       `;
       
@@ -205,13 +247,13 @@ export default definePlugin(async (nitroApp) => {
   });
   
   // Start server
-  storeScp.listen();
+  storeScp.start();
   console.log(`[StoreSCP] ✓ Listening on port ${STORESCP_PORT} (AET: ${STORESCP_AET})`);
   console.log(`[StoreSCP] ✓ Storage path: ${DICOM_STORAGE_PATH}`);
   
   // Graceful shutdown
   nitroApp.hooks.hook('close', () => {
     console.log('[StoreSCP] Stopping C-STORE receiver...');
-    storeScp.close();
+    storeScp.stop();
   });
 });

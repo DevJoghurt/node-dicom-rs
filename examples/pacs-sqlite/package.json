@@ -3,20 +3,28 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
-  "description": "Complete PACS implementation with StoreSCP, QIDO-RS, WADO-RS, SQLite database, and OHIF Viewer",
+  "description": "Complete PACS implementation with StoreSCP, QIDO-RS, WADO-RS, SQLite database, and Cornerstone3D Viewer",
   "scripts": {
-    "dev": "nitro dev",
-    "build": "nitro build",
-    "preview": "node .output/server/index.mjs",
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
     "download-testdata": "bash scripts/downloadTestData.sh"
   },
   "dependencies": {
+    "@cornerstonejs/core": "^4.14.5",
+    "@cornerstonejs/dicom-image-loader": "^4.14.5",
+    "@cornerstonejs/tools": "^4.14.5",
     "@nuxthealth/node-dicom": "file:../..",
-    "nitro": "^3.0.1-alpha.1",
-    "vite": "^7.3.0"
+    "dcmjs": "^0.47.0",
+    "dicom-parser": "^1.8.21",
+    "nuxt": "^4.2.2",
+    "vue": "^3.5.25"
   },
   "devDependencies": {
-    "@types/node": "^25.0.2",
-    "typescript": "^5.9.3"
+    "@originjs/vite-plugin-commonjs": "^1.0.3",
+    "@types/node": "^25.0.3",
+    "typescript": "^5.9.3",
+    "vite-plugin-wasm": "^3.5.0"
   }
 }

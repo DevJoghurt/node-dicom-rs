@@ -22,7 +22,7 @@ receiver.onFileStored((err, event) => {
     console.log('File received:', event.data?.file);
 });
 
-receiver.listen();
+receiver.start();
 ```
 
 ## Configuration Options
@@ -1466,7 +1466,7 @@ receiver.onBeforeStore((tags) => {
   };
 });
 
-await receiver.listen();
+receiver.start();
 ```
 
 #### Callback Signature
@@ -1665,7 +1665,7 @@ receiver.onFileStored((err, event) => {
   console.log(`  Patient: ${data.tags?.PatientName} (${data.tags?.PatientID})`);
 });
 
-receiver.listen();
+receiver.start();
 ```
 
 #### Error Handling
@@ -1953,7 +1953,7 @@ receiver.onStudyCompleted((err, event) => {
     console.log(`  ${study.series.length} series, ${totalInstances} instances`);
 });
 
-receiver.listen();
+receiver.start();
 ```
 
 ## Tips

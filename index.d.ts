@@ -732,13 +732,12 @@ export declare class StoreScp {
   constructor(options: StoreScpOptions)
   /** * Start the DICOM C-STORE SCP server and begin listening for connections.
    *
-   * This method starts the server asynchronously. The server will listen on the
-   * configured port and handle incoming DICOM associations. Events will be emitted
-   * as files are received and stored.
+   * This method starts the server asynchronously in a non-blocking manner.
+   * The server will listen on the configured port and handle incoming DICOM associations.
+   * Events will be emitted as files are received and stored.
    *
    * For S3 storage, this method will verify S3 connectivity before starting.
    *
-   * @returns Promise that resolves when the server stops
    * @throws Error if S3 connectivity check fails (when using S3 backend)
    *
    * @example
@@ -749,47 +748,37 @@ export declare class StoreScp {
    * });
    *
    * // Add event listeners before starting
-   * scp.addEventListener('OnServerStarted', (data) => {
-   *   console.log('✓ Server is ready');
-   * });
-   *
-   * scp.addEventListener('OnFileStored', (data) => {
-   *   console.log('File received');
+   * scp.onFileStored((event) => {
+   *   console.log('File stored:', event.data?.sopInstanceUid);
    * });
    *
    * // Start server (non-blocking)
-   * await scp.listen();
+   * scp.start();
    *
    * // Server is now running in the background
    * console.log('Server started on port 11111');
+   *
+   * // Later, stop the server
+   * scp.stop();
    * ```
    */
-  listen(): Promise<void>
+  start(): void
   /** * Stop the DICOM C-STORE SCP server and close all connections.
    *
    * Initiates a graceful shutdown of the server. All active connections will be
    * terminated and the server will stop accepting new connections.
    *
-   * @returns Promise that resolves when shutdown is initiated
-   *
    * @example
    * ```typescript
    * const scp = new StoreScp({ port: 11111 });
-   * await scp.listen();
+   * scp.start();
    *
    * // Later, when you want to stop the server
-   * await scp.close();
+   * scp.stop();
    * console.log('Server stopped');
-   *
-   * // Handle graceful shutdown on process signals
-   * process.on('SIGINT', async () => {
-   *   console.log('Shutting down...');
-   *   await scp.close();
-   *   process.exit(0);
-   * });
    * ```
    */
-  close(): Promise<void>
+  stop(): void
   /** * Register callback for server started events
    */
   onServerStarted(handler: ((err: Error | null, arg: ScpEventData) => void)): void
@@ -896,7 +885,7 @@ export declare class StoreScp {
    * });
    * ```
    */
-  onBeforeStore(callback: (tags: Record<string, string>) => Record<string, string>): void
+  onBeforeStore(callback: (err: Error | null, tags: Record<string, string>) => Record<string, string>): void
 }
 
 /** * DICOM C-STORE SCU (Service Class User) Client.

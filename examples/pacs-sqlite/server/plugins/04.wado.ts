@@ -7,12 +7,12 @@
 
 import { WadoServer, WadoStorageType } from '@nuxthealth/node-dicom';
 import { join } from 'path';
-import { definePlugin } from "nitro";
+import { defineNitroPlugin, useDatabase } from "#imports";
 
 const WADO_PORT: number = 8043;
 const DICOM_STORAGE_PATH: string = join(process.cwd(), '.data', 'dicom');
 
-export default definePlugin(async (nitroApp) => {
+export default defineNitroPlugin(async (nitroApp) => {
   console.log('[WADO-RS] Starting retrieval service...');
   
   const wado = new WadoServer(WADO_PORT, {

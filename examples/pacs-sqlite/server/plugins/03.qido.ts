@@ -15,12 +15,11 @@ import {
   createQidoInstancesResponse,
   createQidoEmptyResponse
 } from '@nuxthealth/node-dicom';
-import { definePlugin } from "nitro";
-import { useDatabase } from "nitro/database";
+import { defineNitroPlugin, useDatabase } from "#imports";
 
 const QIDO_PORT: number = 8042;
 
-export default definePlugin(async (nitroApp) => {
+export default defineNitroPlugin(async (nitroApp) => {
   console.log('[QIDO-RS] Starting query service...');
   
   const qido = new QidoServer(QIDO_PORT, {

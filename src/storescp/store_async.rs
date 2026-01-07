@@ -166,6 +166,7 @@ pub async fn run_store_async(
         transfer_syntax_mode,
         transfer_syntaxes,
         on_before_store,
+        shutdown_tx: _,
     } = args;
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
@@ -466,38 +467,40 @@ async fn inner(
                                     info!("on_before_store callback is set");
                                     if let Some(ref extracted_tags) = tags {
                                         info!("Extracted tags available, calling callback with {} tags", extracted_tags.len());
-                                        // Call the callback - using Blocking mode to wait for JS to complete
+                                        
+                                        // Call the callback with return value to get modified tags back
                                         use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+                                        use dicom_core::{dicom_value, DataElement, VR};
                                         
                                         // Create a channel to receive the modified tags
                                         let (tx, rx) = tokio::sync::oneshot::channel();
                                         
-                                        // Call the JS callback
+                                        // Call JS callback - it receives (null, tags) and returns modified tags
                                         let status = callback_arc.call_with_return_value(
                                             Ok(extracted_tags.clone()),
                                             ThreadsafeFunctionCallMode::Blocking,
-                                            move |result: Result<HashMap<String, String>, _>, _env| {
-                                                info!("Callback closure executed");
-                                                if let Ok(modified_tags) = result {
-                                                    info!("Received modified tags: {} entries", modified_tags.len());
-                                                    let _ = tx.send(modified_tags);
-                                                } else {
-                                                    error!("Callback returned error: {:?}", result);
+                                            move |modified_result: Result<HashMap<String, String>, napi::Error>, _env| {
+                                                match modified_result {
+                                                    Ok(modified_tags) => {
+                                                        info!("Callback returned {} modified tags", modified_tags.len());
+                                                        let _ = tx.send(modified_tags);
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Callback returned error: {:?}", e);
+                                                        let _ = tx.send(HashMap::new());
+                                                    }
                                                 }
                                                 Ok(())
                                             }
                                         );
                                         info!("call_with_return_value status: {:?}", status);
                                         
-                                        // Wait for the callback to complete
+                                        // Wait for the callback to complete and get modified tags
                                         match rx.await {
-                                            Ok(modified_tags) => {
-                                                info!("Successfully received modified tags");
+                                            Ok(modified_tags) if !modified_tags.is_empty() => {
+                                                info!("Successfully received {} modified tags", modified_tags.len());
                                                 // Update the DICOM object with modified tags
-                                                // Only update tags that were in the original extracted set
                                                 for (tag_name, new_value) in &modified_tags {
-                                                    if extracted_tags.contains_key(tag_name) {
-                                                    // Parse the tag name and update the object
                                                     if let Ok(tag) = crate::utils::parse_tag(tag_name) {
                                                         // Get VR from existing element or default to LO
                                                         let vr = obj_to_save.element(tag)
@@ -509,12 +512,14 @@ async fn inner(
                                                         obj_to_save.put(new_element);
                                                     }
                                                 }
-                                                }
                                                 // Update tags for event emission
                                                 tags = Some(modified_tags);
                                             }
+                                            Ok(_) => {
+                                                warn!("Callback returned empty tags");
+                                            }
                                             Err(e) => {
-                                                error!("Failed to receive modified tags from channel: {:?}", e);
+                                                error!("Failed to receive modified tags: {:?}", e);
                                             }
                                         }
                                     } else {
@@ -522,7 +527,9 @@ async fn inner(
                                     }
                                 } else {
                                     info!("No on_before_store callback set");
-                                }                                let obj_for_file = obj_to_save.clone();
+                                }
+                                
+                                let obj_for_file = obj_to_save.clone();
                                 let file_obj = obj_for_file.with_exact_meta(file_meta);
                                 let mut dicom_bytes = Vec::new();
                                 if store_with_file_meta {
@@ -559,13 +566,14 @@ async fn inner(
 
                                 // Update global study store with hierarchy
                                 // Extract tags at each hierarchy level (study, series, instance)
+                                // Use obj_to_save (which has modified tags from onBeforeStore) instead of original obj
                                 {
                                     let mut store = STUDY_STORE.lock().await;
                                     
                                     // Extract tags by hierarchy level for organized structure
                                     let study_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
                                         let tags = extract_at_hierarchy_level(
-                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Study
+                                            &obj_to_save, extract_tags, extract_custom_tags, HierarchyLevel::Study
                                         );
                                         if tags.is_empty() { None } else { Some(tags) }
                                     } else {
@@ -574,7 +582,7 @@ async fn inner(
                                     
                                     let series_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
                                         let tags = extract_at_hierarchy_level(
-                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Series
+                                            &obj_to_save, extract_tags, extract_custom_tags, HierarchyLevel::Series
                                         );
                                         if tags.is_empty() { None } else { Some(tags) }
                                     } else {
@@ -583,7 +591,7 @@ async fn inner(
                                     
                                     let instance_tags = if !extract_tags.is_empty() || !extract_custom_tags.is_empty() {
                                         let tags = extract_at_hierarchy_level(
-                                            &obj, extract_tags, extract_custom_tags, HierarchyLevel::Instance
+                                            &obj_to_save, extract_tags, extract_custom_tags, HierarchyLevel::Instance
                                         );
                                         if tags.is_empty() { None } else { Some(tags) }
                                     } else {
