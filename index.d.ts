@@ -462,17 +462,19 @@ export declare class DicomFile {
    *
    * This method combines decoding with optional processing steps like frame extraction,
    * windowing (VOI LUT), and 8-bit conversion. Returns processed pixel data in-memory
-   * without file I/O. Requires the 'transcode' feature to be enabled at build time.
+   * without file I/O. Uses the shared image processing utility for consistent behavior
+   * across WADO-RS and DicomFile APIs.
    *
    * **Processing Pipeline:**
    * 1. Decode/decompress pixel data
-   * 2. Extract specific frame (if frameNumber specified)
+   * 2. Apply rescale (slope/intercept) if present
    * 3. Apply windowing/VOI LUT (if requested)
-   * 4. Convert to 8-bit (if requested)
+   * 4. Extract specific frame (if frameNumber specified)
+   * 5. Convert to 8-bit (if requested)
    *
    * @param options - Processing options (all optional)
-   * @returns Buffer containing processed pixel data
-   * @throws Error if no file is opened, transcode feature not enabled, or processing fails
+   * @returns Buffer containing processed pixel data (raw bytes, not encoded image)
+   * @throws Error if no file is opened or processing fails
    *
    * @example
    * ```typescript
@@ -532,6 +534,167 @@ export declare class DicomFile {
   close(): void
 }
 
+/** Builder for creating Instance-level DICOM JSON responses */
+export declare class QidoInstanceResult {
+  constructor()
+  sopInstanceUid(value: string): this
+  sopClassUid(value: string): this
+  instanceNumber(value: string): this
+  rows(value: string): this
+  columns(value: string): this
+  bitsAllocated(value: string): this
+  numberOfFrames(value: string): this
+}
+
+/** Builder for creating Series-level DICOM JSON responses */
+export declare class QidoSeriesResult {
+  constructor()
+  seriesInstanceUid(value: string): this
+  modality(value: string): this
+  seriesNumber(value: string): this
+  seriesDescription(value: string): this
+  seriesDate(value: string): this
+  seriesTime(value: string): this
+  performingPhysicianName(value: string): this
+  numberOfSeriesRelatedInstances(value: string): this
+  bodyPartExamined(value: string): this
+  protocolName(value: string): this
+}
+
+/** QIDO-RS Server (using warp + RUNTIME pattern like StoreSCP) */
+export declare class QidoServer {
+  /** * Create a new QIDO-RS server.
+   *
+   * QIDO-RS (Query based on ID for DICOM Objects) is the query service of DICOMweb.
+   * It provides RESTful endpoints for searching DICOM studies, series, and instances.
+   *
+   * **DICOM Standard Reference:** PS3.18 Section 10 - QIDO-RS
+   *
+   * ## CORS Configuration
+   *
+   * CORS (Cross-Origin Resource Sharing) is essential for web applications that need to
+   * query DICOM data from a different domain than the QIDO-RS server.
+   *
+   * ### When to Enable CORS:
+   * - Web-based DICOM viewers (e.g., OHIF Viewer, Cornerstone-based apps)
+   * - Single-page applications (SPAs) accessing PACS from different origin
+   * - Development environments with separate frontend/backend servers
+   * - Mobile apps using WebView accessing DICOM services
+   *
+   * ### Security Considerations:
+   * - **Production:** Specify exact allowed origins in `cors_allowed_origins`
+   * - **Development:** Can use wildcard (*) but NOT recommended for production
+   * - Always use HTTPS in production to prevent MITM attacks
+   * - Consider implementing authentication/authorization with CORS
+   *
+   * @param port - Port number to listen on (e.g., 8042 for PACS, 8080 for testing)
+   * @param config - Server configuration including CORS settings
+   * @returns QidoServer instance
+   *
+   * @example
+   * ```typescript
+   * // Basic server without CORS (internal network only)
+   * const qido = new QidoServer(8042, {
+   *   verbose: true
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Development server with CORS enabled (allows all origins)
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   verbose: true
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Production server with specific allowed origins
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   corsAllowedOrigins: 'https://viewer.hospital.com,https://app.hospital.com',
+   *   verbose: false
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Complete QIDO-RS server with handlers
+   * import { QidoServer } from '@nuxthealth/node-dicom';
+   *
+   * const qido = new QidoServer(8042, {
+   *   enableCors: true,
+   *   corsAllowedOrigins: 'http://localhost:3000',
+   *   verbose: true
+   * });
+   *
+   * // Register search handlers
+   * qido.onSearchForStudies((err, query) => {
+   *   if (err) throw err;
+   *   // Search database for studies matching query
+   *   const results = searchStudies(query);
+   *   return JSON.stringify(results);
+   * });
+   *
+   * qido.onSearchForSeries((err, query) => {
+   *   if (err) throw err;
+   *   const results = searchSeries(query);
+   *   return JSON.stringify(results);
+   * });
+   *
+   * qido.start();
+   * ```
+   */
+  constructor(port: number, config?: QidoServerConfig | undefined | null)
+  /**
+   * Register handler for "Search for Studies" query (GET /studies)
+   * Callback receives SearchForStudiesQuery and returns JSON string array
+   */
+  onSearchForStudies(callback: (err: Error | null, query: SearchForStudiesQuery) => string | Promise<string>): void
+  /**
+   * Register handler for "Search for Series" query (GET /studies/{uid}/series)
+   * Callback receives SearchForSeriesQuery and returns JSON string array
+   */
+  onSearchForSeries(callback: (err: Error | null, query: SearchForSeriesQuery) => string | Promise<string>): void
+  /**
+   * Register handler for "Search for Instances" in a Study (GET /studies/{uid}/instances)
+   * Callback receives SearchForStudyInstancesQuery and returns JSON string array
+   */
+  onSearchForStudyInstances(callback: (err: Error | null, query: SearchForStudyInstancesQuery) => string | Promise<string>): void
+  /**
+   * Register handler for "Search for Instances" in a Series (GET /studies/{uid}/series/{uid}/instances)
+   * Callback receives SearchForSeriesInstancesQuery and returns JSON string array
+   */
+  onSearchForSeriesInstances(callback: (err: Error | null, query: SearchForSeriesInstancesQuery) => string | Promise<string>): void
+  /** Start the QIDO server using RUNTIME pattern like StoreSCP */
+  start(): void
+  /** Stop the QIDO server */
+  stop(): void
+}
+
+/**
+ * Builder for creating Study-level DICOM JSON responses
+ * Handles all the DICOM tags and VR types automatically
+ */
+export declare class QidoStudyResult {
+  constructor()
+  patientName(value: string): this
+  patientId(value: string): this
+  patientBirthDate(value: string): this
+  patientSex(value: string): this
+  studyInstanceUid(value: string): this
+  studyDate(value: string): this
+  studyTime(value: string): this
+  accessionNumber(value: string): this
+  studyDescription(value: string): this
+  studyId(value: string): this
+  referringPhysicianName(value: string): this
+  modalitiesInStudy(value: string): this
+  numberOfStudyRelatedSeries(value: string): this
+  numberOfStudyRelatedInstances(value: string): this
+}
+
 /** DICOM C-STORE SCP */
 export declare class StoreScp {
   /** * Create a new DICOM C-STORE SCP server instance.
@@ -569,13 +732,12 @@ export declare class StoreScp {
   constructor(options: StoreScpOptions)
   /** * Start the DICOM C-STORE SCP server and begin listening for connections.
    *
-   * This method starts the server asynchronously. The server will listen on the
-   * configured port and handle incoming DICOM associations. Events will be emitted
-   * as files are received and stored.
+   * This method starts the server asynchronously in a non-blocking manner.
+   * The server will listen on the configured port and handle incoming DICOM associations.
+   * Events will be emitted as files are received and stored.
    *
    * For S3 storage, this method will verify S3 connectivity before starting.
    *
-   * @returns Promise that resolves when the server stops
    * @throws Error if S3 connectivity check fails (when using S3 backend)
    *
    * @example
@@ -586,47 +748,37 @@ export declare class StoreScp {
    * });
    *
    * // Add event listeners before starting
-   * scp.addEventListener('OnServerStarted', (data) => {
-   *   console.log('✓ Server is ready');
-   * });
-   *
-   * scp.addEventListener('OnFileStored', (data) => {
-   *   console.log('File received');
+   * scp.onFileStored((event) => {
+   *   console.log('File stored:', event.data?.sopInstanceUid);
    * });
    *
    * // Start server (non-blocking)
-   * await scp.listen();
+   * scp.start();
    *
    * // Server is now running in the background
    * console.log('Server started on port 11111');
+   *
+   * // Later, stop the server
+   * scp.stop();
    * ```
    */
-  listen(): Promise<void>
+  start(): void
   /** * Stop the DICOM C-STORE SCP server and close all connections.
    *
    * Initiates a graceful shutdown of the server. All active connections will be
    * terminated and the server will stop accepting new connections.
    *
-   * @returns Promise that resolves when shutdown is initiated
-   *
    * @example
    * ```typescript
    * const scp = new StoreScp({ port: 11111 });
-   * await scp.listen();
+   * scp.start();
    *
    * // Later, when you want to stop the server
-   * await scp.close();
+   * scp.stop();
    * console.log('Server stopped');
-   *
-   * // Handle graceful shutdown on process signals
-   * process.on('SIGINT', async () => {
-   *   console.log('Shutting down...');
-   *   await scp.close();
-   *   process.exit(0);
-   * });
    * ```
    */
-  close(): Promise<void>
+  stop(): void
   /** * Register callback for server started events
    */
   onServerStarted(handler: ((err: Error | null, arg: ScpEventData) => void)): void
@@ -733,7 +885,7 @@ export declare class StoreScp {
    * });
    * ```
    */
-  onBeforeStore(callback: (tags: Record<string, string>) => Record<string, string>): void
+  onBeforeStore(callback: (err: Error | null, tags: Record<string, string>) => Record<string, string>): void
 }
 
 /** * DICOM C-STORE SCU (Service Class User) Client.
@@ -1033,6 +1185,15 @@ export declare class StoreScu {
   send(callbacks?: { onTransferStarted?: (err: Error | null, event: TransferStartedEvent) => void, onFileSending?: (err: Error | null, event: FileSendingEvent) => void, onFileSent?: (err: Error | null, event: FileSentEvent) => void, onFileError?: (err: Error | null, event: FileErrorEvent) => void, onTransferCompleted?: (err: Error | null, event: TransferCompletedEvent) => void }): Promise<Array<ResultObject>>
 }
 
+/** WADO-RS Server */
+export declare class WadoServer {
+  constructor(port: number, config: WadoServerConfig)
+  /** Start the WADO-RS server */
+  start(): void
+  /** Stop the WADO-RS server */
+  stop(): void
+}
+
 /** Abstract syntax (SOP Class) acceptance mode */
 export declare const enum AbstractSyntaxMode {
   /** Accept all known storage SOP classes (default preset) */
@@ -1276,6 +1437,18 @@ export interface CommonTagSets {
  */
 export declare function createCustomTag(tag: string, name: string): CustomTag
 
+/** Helper to create empty response array */
+export declare function createQidoEmptyResponse(): string
+
+/** Create final JSON response from Instance results */
+export declare function createQidoInstancesResponse(instances: Array<QidoInstanceResult>): string
+
+/** Create final JSON response from Series results */
+export declare function createQidoSeriesResponse(series: Array<QidoSeriesResult>): string
+
+/** Create final JSON response from Study results */
+export declare function createQidoStudiesResponse(studies: Array<QidoStudyResult>): string
+
 /** * Custom tag specification for extracting non-standard or private DICOM tags.
  */
 export interface CustomTag {
@@ -1290,6 +1463,14 @@ export interface DicomFileMeta {
   sopClassUid: string
   /** Storage SOP Instance UID */
   sopInstanceUid: string
+}
+
+/** DICOM JSON Value representation (PS3.18 Section F.2.2) */
+export interface DicomJsonValue {
+  /** Value Representation (e.g., "PN", "DA", "TM", "UI", "LO", "SH") */
+  vr: string
+  /** Array of values - always an array even for single values */
+  value?: Array<string>
 }
 
 export interface FileErrorData {
@@ -1676,6 +1857,23 @@ export interface PixelDataProcessingOptions {
   convertTo8Bit?: boolean
 }
 
+/** QIDO-RS Server Configuration */
+export interface QidoServerConfig {
+  /**
+   * Enable CORS (Cross-Origin Resource Sharing) headers
+   * Default: false
+   */
+  enableCors?: boolean
+  /**
+   * CORS allowed origins (comma-separated list of origins)
+   * Examples: "http://localhost:3000", "https://example.com,https://app.example.com"
+   * If not specified, allows all origins (*) when CORS is enabled
+   */
+  corsAllowedOrigins?: string
+  /** Enable verbose logging for debugging */
+  verbose?: boolean
+}
+
 /** * Result of a DICOM transfer operation.
  *
  * Returned by the `send()` method to indicate the outcome of the transfer.
@@ -1753,6 +1951,76 @@ export interface ScpEventDetails {
   error?: string
   /** Study completion data with full hierarchy */
   study?: StudyHierarchyData
+}
+
+/**
+ * Search for Instances - All Instances in a Series
+ * Endpoint: /studies/{StudyInstanceUID}/series/{SeriesInstanceUID}/instances
+ */
+export interface SearchForSeriesInstancesQuery {
+  studyInstanceUid: string
+  seriesInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  sopClassUid?: string
+  sopInstanceUid?: string
+  instanceNumber?: string
+}
+
+/**
+ * Search for Series - All Series in a Study
+ * Endpoint: /studies/{StudyInstanceUID}/series
+ */
+export interface SearchForSeriesQuery {
+  studyInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  modality?: string
+  seriesInstanceUid?: string
+  seriesNumber?: string
+  performedProcedureStepStartDate?: string
+  performedProcedureStepStartTime?: string
+  scheduledProcedureStepId?: string
+  requestedProcedureId?: string
+}
+
+/**
+ * Search for Studies - All Studies
+ * Endpoint: /studies
+ */
+export interface SearchForStudiesQuery {
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  studyDate?: string
+  studyTime?: string
+  accessionNumber?: string
+  modalitiesInStudy?: string
+  referringPhysicianName?: string
+  patientName?: string
+  patientId?: string
+  studyInstanceUid?: string
+  studyId?: string
+}
+
+/**
+ * Search for Instances - All Instances in a Study
+ * Endpoint: /studies/{StudyInstanceUID}/instances
+ */
+export interface SearchForStudyInstancesQuery {
+  studyInstanceUid: string
+  limit?: number
+  offset?: number
+  fuzzymatching?: boolean
+  includefield?: string
+  sopClassUid?: string
+  sopInstanceUid?: string
+  instanceNumber?: string
 }
 
 /** Series data within a study */
@@ -2136,4 +2404,94 @@ export declare const enum TransferSyntaxMode {
   UncompressedOnly = 'UncompressedOnly',
   /** Accept only specified transfer syntaxes */
   Custom = 'Custom'
+}
+
+/** Media types supported for DICOM retrieval */
+export declare const enum WadoMediaType {
+  /** application/dicom - Full DICOM files */
+  Dicom = 'Dicom',
+  /** application/dicom+json - DICOM JSON metadata */
+  DicomJson = 'DicomJson',
+  /** application/dicom+xml - DICOM XML metadata */
+  DicomXml = 'DicomXml'
+}
+
+/** Frame rendering quality for thumbnail/rendered endpoints */
+export interface WadoRenderingOptions {
+  /** JPEG quality (1-100, default: 90) */
+  quality?: number
+  /** Output width in pixels (maintains aspect ratio if only one dimension specified) */
+  width?: number
+  /** Output height in pixels */
+  height?: number
+  /** Window center for grayscale images */
+  windowCenter?: number
+  /** Window width for grayscale images */
+  windowWidth?: number
+}
+
+/** WADO-RS Server Configuration */
+export interface WadoServerConfig {
+  /** Storage backend type */
+  storageType: WadoStorageType
+  /**
+   * Base path for filesystem storage (required for Filesystem)
+   * Files should be organized as: {base_path}/{studyUID}/{seriesUID}/{instanceUID}.dcm
+   */
+  basePath?: string
+  /** S3 configuration (required for S3) */
+  s3Config?: S3Config
+  /** Enable metadata endpoint (GET .../metadata) */
+  enableMetadata?: boolean
+  /** Enable frame retrieval (GET .../frames/{frameList}) */
+  enableFrames?: boolean
+  /** Enable rendered endpoint (GET .../rendered) */
+  enableRendered?: boolean
+  /** Enable thumbnail endpoint (GET .../thumbnail) */
+  enableThumbnail?: boolean
+  /** Enable bulkdata retrieval (GET .../bulkdata/{bulkdataUID}) */
+  enableBulkdata?: boolean
+  /** Default transcoding for pixel data */
+  defaultTranscoding?: WadoTranscoding
+  /** Maximum concurrent connections */
+  maxConnections?: number
+  /**
+   * Enable CORS (Cross-Origin Resource Sharing) headers
+   * Default: false
+   */
+  enableCors?: boolean
+  /**
+   * CORS allowed origins (comma-separated list of origins)
+   * Examples: "http://localhost:3000", "https://example.com,https://app.example.com"
+   * If not specified, allows all origins (*) when CORS is enabled
+   */
+  corsAllowedOrigins?: string
+  /** Enable compression (gzip) for responses */
+  enableCompression?: boolean
+  /** Default rendering options for thumbnails */
+  thumbnailOptions?: WadoRenderingOptions
+  /** Enable verbose logging */
+  verbose?: boolean
+}
+
+/** Storage backend type for WADO-RS */
+export declare const enum WadoStorageType {
+  /** Store files on local filesystem */
+  Filesystem = 'Filesystem',
+  /** Store files in S3-compatible object storage */
+  S3 = 'S3'
+}
+
+/** Pixel data transcoding options */
+export declare const enum WadoTranscoding {
+  /** No transcoding - return as stored */
+  None = 'None',
+  /** Transcode to JPEG baseline */
+  JpegBaseline = 'JpegBaseline',
+  /** Transcode to JPEG 2000 */
+  Jpeg2000 = 'Jpeg2000',
+  /** Transcode to PNG */
+  Png = 'Png',
+  /** Transcode to uncompressed */
+  Uncompressed = 'Uncompressed'
 }

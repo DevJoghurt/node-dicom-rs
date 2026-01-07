@@ -943,8 +943,6 @@ impl DicomFile {
             return Err(napi::Error::from_reason("File not opened. Call open() first.".to_string()));
         }
         
-        let dicom_ref = self.dicom_file.lock().unwrap();
-        let obj = dicom_ref.as_ref().unwrap();
         let format = options.format.unwrap_or(PixelDataFormat::Raw);
         let decode = options.decode.unwrap_or(false);
         
@@ -979,6 +977,9 @@ impl DicomFile {
         
         // Handle raw format without decoding
         if matches!(format, PixelDataFormat::Raw) && !decode {
+            let dicom_ref = self.dicom_file.lock().unwrap();
+            let obj = dicom_ref.as_ref().unwrap();
+            
             let pixel_data = obj.element(tags::PIXEL_DATA)
                 .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
             
@@ -991,7 +992,52 @@ impl DicomFile {
             return Ok(format!("Raw pixel data saved to {} ({} bytes)", options.output_path, data.len()));
         }
         
-        // Decoding required beyond this point
+        // Image rendering required (PNG/JPEG)
+        if matches!(format, PixelDataFormat::Png) || matches!(format, PixelDataFormat::Jpeg) {
+            use crate::utils::image_processing::{render_dicom_object, ImageRenderOptions, ImageOutputFormat};
+            
+            let dicom_ref = self.dicom_file.lock().unwrap();
+            let obj = dicom_ref.as_ref().unwrap();
+            
+            // Create render options
+            let render_opts = ImageRenderOptions {
+                width: None,
+                height: None,
+                quality: Some(90),
+                window_center: options.window_center.map(|c| c as f32),
+                window_width: options.window_width.map(|w| w as f32),
+                apply_voi_lut: options.apply_voi_lut,
+                rescale_intercept: None, // Read from file
+                rescale_slope: None,     // Read from file
+                convert_to_8bit: options.convert_to_8bit,
+                frame_number: options.frame_number,
+                format: match format {
+                    PixelDataFormat::Png => ImageOutputFormat::Png,
+                    PixelDataFormat::Jpeg => ImageOutputFormat::Jpeg,
+                    _ => unreachable!(),
+                },
+            };
+            
+            // Render directly from DICOM object
+            let output = render_dicom_object(obj, &render_opts)
+                .map_err(|e| napi::Error::from_reason(format!("Rendering failed: {}", e)))?;
+            
+            drop(dicom_ref);
+            
+            // Write to file
+            std::fs::write(&options.output_path, &output)
+                .map_err(|e| napi::Error::from_reason(format!("Failed to write file: {}", e)))?;
+            
+            let format_str = match render_opts.format {
+                ImageOutputFormat::Jpeg => "JPEG",
+                ImageOutputFormat::Png => "PNG",
+                ImageOutputFormat::Bmp => "BMP",
+            };
+            
+            return Ok(format!("{} image saved to {} ({} bytes)", format_str, options.output_path, output.len()));
+        }
+        
+        // Fallback: decoded raw format
         #[cfg(not(feature = "transcode"))]
         {
             return Err(napi::Error::from_reason(
@@ -1001,11 +1047,9 @@ impl DicomFile {
         
         #[cfg(feature = "transcode")]
         {
-            // Get pixel data info first (need to drop lock first)
-            drop(dicom_ref);
+            // Get pixel data info first
             let info = self.get_pixel_data_info()?;
             
-            // Re-acquire lock for pixel data access
             let dicom_ref = self.dicom_file.lock().unwrap();
             let obj = dicom_ref.as_ref().unwrap();
             
@@ -1016,7 +1060,6 @@ impl DicomFile {
                 decoded.to_vec()
                     .map_err(|e| napi::Error::from_reason(format!("Failed to convert pixel data: {}", e)))?
             } else {
-                // For uncompressed data, just get raw bytes
                 let pixel_data = obj.element(tags::PIXEL_DATA)
                     .map_err(|e| napi::Error::from_reason(format!("Pixel data not found: {}", e)))?;
                 pixel_data.to_bytes()
@@ -1031,9 +1074,9 @@ impl DicomFile {
                         format!("Frame number {} out of range (0-{})", frame_num, info.frames - 1)
                     ));
                 }
-                // TODO: Extract specific frame
+                // TODO: Extract specific frame for raw format
                 return Err(napi::Error::from_reason(
-                    "Frame extraction not yet implemented. Use decode=false for raw extraction.".to_string()
+                    "Frame extraction for raw decoded format not yet implemented. Use PNG/JPEG format instead.".to_string()
                 ));
             }
             
@@ -1295,17 +1338,19 @@ impl DicomFile {
      * 
      * This method combines decoding with optional processing steps like frame extraction,
      * windowing (VOI LUT), and 8-bit conversion. Returns processed pixel data in-memory
-     * without file I/O. Requires the 'transcode' feature to be enabled at build time.
+     * without file I/O. Uses the shared image processing utility for consistent behavior
+     * across WADO-RS and DicomFile APIs.
      * 
      * **Processing Pipeline:**
      * 1. Decode/decompress pixel data
-     * 2. Extract specific frame (if frameNumber specified)
+     * 2. Apply rescale (slope/intercept) if present
      * 3. Apply windowing/VOI LUT (if requested)
-     * 4. Convert to 8-bit (if requested)
+     * 4. Extract specific frame (if frameNumber specified)
+     * 5. Convert to 8-bit (if requested)
      * 
      * @param options - Processing options (all optional)
-     * @returns Buffer containing processed pixel data
-     * @throws Error if no file is opened, transcode feature not enabled, or processing fails
+     * @returns Buffer containing processed pixel data (raw bytes, not encoded image)
+     * @throws Error if no file is opened or processing fails
      * 
      * @example
      * ```typescript
@@ -1344,174 +1389,60 @@ impl DicomFile {
      */
     #[napi]
     pub fn get_processed_pixel_data(&self, options: Option<PixelDataProcessingOptions>) -> Result<napi::bindgen_prelude::Buffer, JsError> {
-        #[cfg(not(feature = "transcode"))]
-        {
+        if self.dicom_file.lock().unwrap().is_none() {
+            return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
+        }
+        
+        use crate::utils::image_processing::{
+            render_dicom_object, ImageRenderOptions, ImageOutputFormat
+        };
+        
+        let opts = options.unwrap_or(PixelDataProcessingOptions {
+            frame_number: None,
+            apply_voi_lut: None,
+            window_center: None,
+            window_width: None,
+            convert_to_8bit: None,
+        });
+        
+        let dicom_ref = self.dicom_file.lock().unwrap();
+        let obj = dicom_ref.as_ref().unwrap();
+        
+        // Create render options - use BMP format as it produces uncompressed raw RGB data
+        let render_opts = ImageRenderOptions {
+            width: None,  // Keep original dimensions
+            height: None,
+            quality: None, // Not used for BMP
+            window_center: opts.window_center.map(|c| c as f32),
+            window_width: opts.window_width.map(|w| w as f32),
+            apply_voi_lut: opts.apply_voi_lut,
+            rescale_intercept: None, // Read from file
+            rescale_slope: None,     // Read from file
+            convert_to_8bit: opts.convert_to_8bit,
+            frame_number: opts.frame_number,
+            format: ImageOutputFormat::Bmp, // BMP for raw pixel access
+        };
+        
+        // Use the shared utility to process pixel data
+        let bmp_data = render_dicom_object(obj, &render_opts)
+            .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to process pixel data: {}", e))))?;
+        
+        drop(dicom_ref);
+        
+        // BMP file format: 14-byte file header + 40-byte DIB header + pixel data
+        // Skip the headers to get raw pixel data
+        const BMP_HEADER_SIZE: usize = 14 + 40; // File header + DIB header (BITMAPINFOHEADER)
+        
+        if bmp_data.len() <= BMP_HEADER_SIZE {
             return Err(JsError::from(napi::Error::from_reason(
-                "Pixel data processing requires the 'transcode' feature. Rebuild with --features transcode".to_string()
+                "Invalid BMP data: too small".to_string()
             )));
         }
         
-        #[cfg(feature = "transcode")]
-        {
-            if self.dicom_file.lock().unwrap().is_none() {
-                return Err(JsError::from(napi::Error::from_reason("File not opened. Call open() first.".to_string())));
-            }
-            
-            let opts = options.unwrap_or(PixelDataProcessingOptions {
-                frame_number: None,
-                apply_voi_lut: None,
-                window_center: None,
-                window_width: None,
-                convert_to_8bit: None,
-            });
-            
-            // Get pixel data info for processing
-            let info = self.get_pixel_data_info()
-                .map_err(|e| JsError::from(e))?;
-            
-            let dicom_ref = self.dicom_file.lock().unwrap();
-            let obj = dicom_ref.as_ref().unwrap();
-            
-            // Step 1: Get pixel data (decode if compressed, otherwise get raw)
-            let mut bytes = if info.is_compressed {
-                let decoded = obj.decode_pixel_data()
-                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to decode pixel data: {}", e))))?;
-                decoded.to_vec()
-                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to convert pixel data: {}", e))))?
-            } else {
-                // For uncompressed data, just get raw bytes
-                let pixel_data = obj.element(tags::PIXEL_DATA)
-                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Pixel data not found: {}", e))))?;
-                pixel_data.to_bytes()
-                    .map_err(|e| JsError::from(napi::Error::from_reason(format!("Failed to read pixel data: {}", e))))?
-                    .to_vec()
-            };
-            
-            // Step 3: Extract specific frame if requested
-            if let Some(frame_num) = opts.frame_number {
-                if frame_num >= info.frames {
-                    return Err(JsError::from(napi::Error::from_reason(
-                        format!("Frame number {} out of range (0-{})", frame_num, info.frames - 1)
-                    )));
-                }
-                
-                // Calculate frame size
-                let bytes_per_pixel = (info.bits_allocated / 8) as usize;
-                let frame_size = info.width as usize * info.height as usize * 
-                                info.samples_per_pixel as usize * bytes_per_pixel;
-                
-                let start = frame_num as usize * frame_size;
-                let end = start + frame_size;
-                
-                if end > bytes.len() {
-                    return Err(JsError::from(napi::Error::from_reason(
-                        format!("Frame extraction failed: calculated size {} exceeds buffer size {}", end, bytes.len())
-                    )));
-                }
-                
-                bytes = bytes[start..end].to_vec();
-            }
-            
-            // Step 4: Apply windowing if requested
-            let apply_windowing = opts.apply_voi_lut.unwrap_or(false) || 
-                                 opts.window_center.is_some() || 
-                                 opts.window_width.is_some();
-            
-            if apply_windowing && info.bits_allocated == 16 {
-                // Get window parameters
-                let (window_center, window_width) = if opts.window_center.is_some() || opts.window_width.is_some() {
-                    // Use provided parameters (require both if one is provided)
-                    let center = opts.window_center.ok_or_else(|| 
-                        JsError::from(napi::Error::from_reason("windowCenter required when windowWidth is specified".to_string())))?;
-                    let width = opts.window_width.ok_or_else(|| 
-                        JsError::from(napi::Error::from_reason("windowWidth required when windowCenter is specified".to_string())))?;
-                    (center, width)
-                } else if opts.apply_voi_lut.unwrap_or(false) {
-                    // Use parameters from file
-                    let center = info.window_center.ok_or_else(|| 
-                        JsError::from(napi::Error::from_reason("No WindowCenter found in file. Provide windowCenter manually.".to_string())))?;
-                    let width = info.window_width.ok_or_else(|| 
-                        JsError::from(napi::Error::from_reason("No WindowWidth found in file. Provide windowWidth manually.".to_string())))?;
-                    (center, width)
-                } else {
-                    return Err(JsError::from(napi::Error::from_reason("Windowing requested but no parameters available".to_string())));
-                };
-                
-                // Apply rescale if available
-                let rescale_slope = info.rescale_slope.unwrap_or(1.0);
-                let rescale_intercept = info.rescale_intercept.unwrap_or(0.0);
-                
-                // Calculate window bounds
-                let window_min = window_center - window_width / 2.0;
-                let window_max = window_center + window_width / 2.0;
-                
-                // Process each pixel
-                let pixel_count = bytes.len() / 2; // 16-bit pixels
-                let mut windowed = if opts.convert_to_8bit.unwrap_or(false) {
-                    Vec::with_capacity(pixel_count)
-                } else {
-                    Vec::with_capacity(bytes.len())
-                };
-                
-                for i in 0..pixel_count {
-                    let raw_value = if info.pixel_representation == 0 {
-                        // Unsigned
-                        u16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as f64
-                    } else {
-                        // Signed
-                        i16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as f64
-                    };
-                    
-                    // Apply rescale
-                    let rescaled = raw_value * rescale_slope + rescale_intercept;
-                    
-                    // Apply windowing
-                    let windowed_value = if rescaled <= window_min {
-                        0.0
-                    } else if rescaled >= window_max {
-                        if opts.convert_to_8bit.unwrap_or(false) {
-                            255.0
-                        } else {
-                            65535.0
-                        }
-                    } else {
-                        let normalized = (rescaled - window_min) / window_width;
-                        if opts.convert_to_8bit.unwrap_or(false) {
-                            normalized * 255.0
-                        } else {
-                            normalized * 65535.0
-                        }
-                    };
-                    
-                    if opts.convert_to_8bit.unwrap_or(false) {
-                        windowed.push(windowed_value as u8);
-                    } else {
-                        let value_u16 = windowed_value as u16;
-                        windowed.extend_from_slice(&value_u16.to_le_bytes());
-                    }
-                }
-                
-                bytes = windowed;
-            } else if opts.convert_to_8bit.unwrap_or(false) && info.bits_allocated == 16 {
-                // Convert to 8-bit without windowing (simple scaling)
-                let pixel_count = bytes.len() / 2;
-                let mut converted = Vec::with_capacity(pixel_count);
-                
-                for i in 0..pixel_count {
-                    let value = if info.pixel_representation == 0 {
-                        u16::from_le_bytes([bytes[i*2], bytes[i*2+1]])
-                    } else {
-                        i16::from_le_bytes([bytes[i*2], bytes[i*2+1]]) as u16
-                    };
-                    // Simple bit shift (loses precision but fast)
-                    converted.push((value >> 8) as u8);
-                }
-                
-                bytes = converted;
-            }
-            
-            Ok(bytes.into())
-        }
+        // Extract just the pixel data (skip BMP headers)
+        let pixel_data = &bmp_data[BMP_HEADER_SIZE..];
+        
+        Ok(pixel_data.to_vec().into())
     }
 
     // Helper method to convert DICOM to JSON string (used by both to_json and save_as_json)

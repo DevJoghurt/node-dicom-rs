@@ -1,4 +1,3 @@
-use napi::bindgen_prelude::AsyncTask;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
 use std::collections::HashMap;
@@ -29,7 +28,6 @@ type EventReceiver = broadcast::Receiver<(StoreScpEvent, ScpEventData)>;
 lazy_static::lazy_static! {
     static ref EVENT_CHANNEL: (EventSender, EventReceiver) = broadcast::channel(100);
     static ref RUNTIME: Runtime = Runtime::new().unwrap();
-    static ref SHUTDOWN_NOTIFY: Arc<Notify> = Arc::new(Notify::new());
 }
 
 /**
@@ -138,6 +136,8 @@ pub struct StoreScp {
     transfer_syntaxes: Vec<String>,
     /// Callback for modifying tags before storage (synchronous)
     on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
+    /// Shutdown channel for graceful shutdown
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 
@@ -252,77 +252,9 @@ pub struct InstanceHierarchyData {
     pub tags: Option<HashMap<String, String>>,
 }
 
-pub struct StoreScpServer  {
-    verbose: bool,
-    calling_ae_title: String,
-    strict: bool,
-    max_pdu_length: u32,
-    out_dir: String,
-    port: u16,
-    study_timeout: u32,
-    storage_backend: StorageBackendType,
-    s3_config: Option<S3Config>,
-    store_with_file_meta: bool,
-    extract_tags: Vec<String>,
-    extract_custom_tags: Vec<CustomTag>,
-    abstract_syntax_mode: AbstractSyntaxMode,
-    abstract_syntaxes: Vec<String>,
-    transfer_syntax_mode: TransferSyntaxMode,
-    transfer_syntaxes: Vec<String>,
-    on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
-}
 
-#[napi]
-impl napi::Task for StoreScpServer {
-  type JsValue = ();
-  type Output = ();
 
-  fn compute(&mut self) -> napi::bindgen_prelude::Result<()> {
-
-    let args = StoreScp {
-      verbose: self.verbose,
-      calling_ae_title: self.calling_ae_title.clone(),
-      strict: self.strict,
-      max_pdu_length: self.max_pdu_length,
-      port: self.port,
-      out_dir: Some(self.out_dir.clone()),
-      study_timeout: self.study_timeout,
-      storage_backend: self.storage_backend.clone(),
-      s3_config: self.s3_config.clone(),
-      store_with_file_meta: self.store_with_file_meta,
-      extract_tags: self.extract_tags.clone(),
-      extract_custom_tags: self.extract_custom_tags.clone(),
-      abstract_syntax_mode: self.abstract_syntax_mode.clone(),
-      abstract_syntaxes: self.abstract_syntaxes.clone(),
-      transfer_syntax_mode: self.transfer_syntax_mode.clone(),
-      transfer_syntaxes: self.transfer_syntaxes.clone(),
-      on_before_store: self.on_before_store.clone(),
-    };
-
-    RUNTIME.block_on(async move {
-      let server_task = RUNTIME.spawn(async move {
-        run(args).await.unwrap_or_else(|e| {
-          error!("{:?}", e);
-          std::process::exit(-2);
-        });
-      });
-
-      // Wait for shutdown signal
-      SHUTDOWN_NOTIFY.notified().await;
-      info!("Shutting down server...");
-      server_task.abort();
-    });
-    
-    info!("Server stopped");
-    Ok(())
-  }
-
-  fn resolve(&mut self, _env: napi::Env, output: Self::Output) -> napi::bindgen_prelude::Result<Self::JsValue> {
-    Ok(output)
-  }
-}
-
-async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(args: StoreScp, mut shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Result<(), Box<dyn std::error::Error>> {
 
   std::fs::create_dir_all(args.out_dir.as_deref().unwrap_or(".")).unwrap_or_else(|e| {
       error!("Could not create output directory: {}", e);
@@ -341,12 +273,10 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
       data: None,
   });
 
-  let shutdown_notify = SHUTDOWN_NOTIFY.clone();
-
   loop {
       tokio::select! {
-          _ = shutdown_notify.notified() => {
-              info!("Shutting down run task...");
+          _ = &mut shutdown_rx => {
+              info!("Shutdown signal received");
               break;
           }
           result = listener.accept() => {
@@ -374,13 +304,13 @@ async fn run(args: StoreScp) -> Result<(), Box<dyn std::error::Error>> {
                   transfer_syntax_mode: args.transfer_syntax_mode.clone(),
                   transfer_syntaxes: args.transfer_syntaxes.clone(),
                   on_before_store: args.on_before_store.clone(),
+                  shutdown_tx: None,
               };
 
-              let shutdown_notify = SHUTDOWN_NOTIFY.clone();
               RUNTIME.spawn(async move {
                   tokio::select! {
-                      _ = shutdown_notify.notified() => {
-                          info!("Shutting down connection task...");
+                      _ = std::future::pending::<()>() => {
+                          // This branch will never execute - connections handle their own lifecycle
                       }
                       result = run_store_async(socket, &args, move |event_details| {
                           StoreScp::emit_event(StoreScpEvent::OnFileStored, ScpEventData {
@@ -643,6 +573,10 @@ impl StoreScp {
         let extract_tags = options.extract_tags.unwrap_or_default();
         let extract_custom_tags = options.extract_custom_tags.unwrap_or_default();
         
+        // Debug: Log what tags we're extracting
+        info!("StoreSCP configured with {} extract_tags: {:?}", extract_tags.len(), extract_tags);
+        info!("StoreSCP configured with {} extract_custom_tags", extract_custom_tags.len());
+        
         // Handle syntax configuration
         let abstract_syntax_mode = options.abstract_syntax_mode.unwrap_or(AbstractSyntaxMode::AllStorage);
         let transfer_syntax_mode = options.transfer_syntax_mode.unwrap_or(TransferSyntaxMode::All);
@@ -668,19 +602,19 @@ impl StoreScp {
             transfer_syntax_mode,
             transfer_syntaxes,
             on_before_store: None,
+            shutdown_tx: None,
         }
     }
 
     /**
      * Start the DICOM C-STORE SCP server and begin listening for connections.
      * 
-     * This method starts the server asynchronously. The server will listen on the
-     * configured port and handle incoming DICOM associations. Events will be emitted
-     * as files are received and stored.
+     * This method starts the server asynchronously in a non-blocking manner.
+     * The server will listen on the configured port and handle incoming DICOM associations.
+     * Events will be emitted as files are received and stored.
      * 
      * For S3 storage, this method will verify S3 connectivity before starting.
      * 
-     * @returns Promise that resolves when the server stops
      * @throws Error if S3 connectivity check fails (when using S3 backend)
      * 
      * @example
@@ -691,27 +625,25 @@ impl StoreScp {
      * });
      * 
      * // Add event listeners before starting
-     * scp.addEventListener('OnServerStarted', (data) => {
-     *   console.log('✓ Server is ready');
-     * });
-     * 
-     * scp.addEventListener('OnFileStored', (data) => {
-     *   console.log('File received');
+     * scp.onFileStored((event) => {
+     *   console.log('File stored:', event.data?.sopInstanceUid);
      * });
      * 
      * // Start server (non-blocking)
-     * await scp.listen();
+     * scp.start();
      * 
      * // Server is now running in the background
      * console.log('Server started on port 11111');
+     * 
+     * // Later, stop the server
+     * scp.stop();
      * ```
      */
     #[napi]
-    pub fn listen(&self) -> AsyncTask<StoreScpServer> {
+    pub fn start(&mut self) -> napi::Result<()> {
         info!("Starting server...");
         if self.storage_backend == StorageBackendType::S3 {
             if let Some(ref s3_config) = self.s3_config {
-                //log the bucket name and region and endpoint for S3 config
                 info!("Using S3 storage backend");
                 info!("S3 Bucket: {}", s3_config.bucket);
                 if let Some(ref endpoint) = s3_config.endpoint {
@@ -727,30 +659,44 @@ impl StoreScp {
                 });
             } else {
                 error!("S3 storage backend selected, but no S3 config provided!");
-                panic!("S3 config required for S3 backend");
+                return Err(napi::Error::from_reason("S3 config required for S3 backend"));
             }
         } else {
             info!("Using Filesystem storage backend");
         }
-        AsyncTask::new(StoreScpServer {
-          verbose: self.verbose,
-          calling_ae_title: self.calling_ae_title.clone(),
-          strict: self.strict,
-          max_pdu_length: self.max_pdu_length,
-          port: self.port,
-          out_dir: self.out_dir.clone().unwrap_or_else(|| ".".to_string()),
-          study_timeout: self.study_timeout,
-          storage_backend: self.storage_backend.clone(),
-          s3_config: self.s3_config.clone(),
-          store_with_file_meta: self.store_with_file_meta,
-          extract_tags: self.extract_tags.clone(),
-          extract_custom_tags: self.extract_custom_tags.clone(),
-          abstract_syntax_mode: self.abstract_syntax_mode.clone(),
-          abstract_syntaxes: self.abstract_syntaxes.clone(),
-          transfer_syntax_mode: self.transfer_syntax_mode.clone(),
-          transfer_syntaxes: self.transfer_syntaxes.clone(),
-          on_before_store: self.on_before_store.clone(),
-        })
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        
+        let args = StoreScp {
+            verbose: self.verbose,
+            calling_ae_title: self.calling_ae_title.clone(),
+            strict: self.strict,
+            max_pdu_length: self.max_pdu_length,
+            port: self.port,
+            out_dir: self.out_dir.clone(),
+            study_timeout: self.study_timeout,
+            storage_backend: self.storage_backend.clone(),
+            s3_config: self.s3_config.clone(),
+            store_with_file_meta: self.store_with_file_meta,
+            extract_tags: self.extract_tags.clone(),
+            extract_custom_tags: self.extract_custom_tags.clone(),
+            abstract_syntax_mode: self.abstract_syntax_mode.clone(),
+            abstract_syntaxes: self.abstract_syntaxes.clone(),
+            transfer_syntax_mode: self.transfer_syntax_mode.clone(),
+            transfer_syntaxes: self.transfer_syntaxes.clone(),
+            on_before_store: self.on_before_store.clone(),
+            shutdown_tx: None,
+        };
+
+        RUNTIME.spawn(async move {
+            if let Err(e) = run(args, shutdown_rx).await {
+                error!("Server error: {:?}", e);
+            }
+            info!("Server stopped");
+        });
+
+        self.shutdown_tx = Some(shutdown_tx);
+        Ok(())
     }
 
     /**
@@ -759,30 +705,24 @@ impl StoreScp {
      * Initiates a graceful shutdown of the server. All active connections will be
      * terminated and the server will stop accepting new connections.
      * 
-     * @returns Promise that resolves when shutdown is initiated
-     * 
      * @example
      * ```typescript
      * const scp = new StoreScp({ port: 11111 });
-     * await scp.listen();
+     * scp.start();
      * 
      * // Later, when you want to stop the server
-     * await scp.close();
+     * scp.stop();
      * console.log('Server stopped');
-     * 
-     * // Handle graceful shutdown on process signals
-     * process.on('SIGINT', async () => {
-     *   console.log('Shutting down...');
-     *   await scp.close();
-     *   process.exit(0);
-     * });
      * ```
      */
     #[napi]
-    pub async fn close(&self) {
-        info!("Initiating shutdown...");
-        SHUTDOWN_NOTIFY.notify_waiters();
-        //RUNTIME.shutdown_timeout(std::time::Duration::from_secs(5));
+    pub fn stop(&mut self) -> napi::Result<()> {
+        info!("Stopping server...");
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        info!("Shutdown signal sent");
+        Ok(())
     }
 
     /**
@@ -791,16 +731,10 @@ impl StoreScp {
     #[napi]
     pub fn on_server_started(&self, handler: ThreadsafeFunction<ScpEventData, ()>) {
         let mut receiver = EVENT_CHANNEL.0.subscribe();
-        let shutdown_notify = SHUTDOWN_NOTIFY.clone();
         RUNTIME.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => break,
-                    result = receiver.recv() => {
-                        if let Ok((StoreScpEvent::OnServerStarted, data)) = result {
-                            handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
-                        }
-                    }
+                if let Ok((StoreScpEvent::OnServerStarted, data)) = receiver.recv().await {
+                    handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                 }
             }
         });
@@ -812,16 +746,10 @@ impl StoreScp {
     #[napi]
     pub fn on_connection(&self, handler: ThreadsafeFunction<ScpEventData, ()>) {
         let mut receiver = EVENT_CHANNEL.0.subscribe();
-        let shutdown_notify = SHUTDOWN_NOTIFY.clone();
         RUNTIME.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => break,
-                    result = receiver.recv() => {
-                        if let Ok((StoreScpEvent::OnConnection, data)) = result {
-                            handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
-                        }
-                    }
+                if let Ok((StoreScpEvent::OnConnection, data)) = receiver.recv().await {
+                    handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                 }
             }
         });
@@ -836,16 +764,10 @@ impl StoreScp {
     #[napi]
     pub fn on_file_stored(&self, handler: ThreadsafeFunction<ScpEventData, ()>) {
         let mut receiver = EVENT_CHANNEL.0.subscribe();
-        let shutdown_notify = SHUTDOWN_NOTIFY.clone();
         RUNTIME.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => break,
-                    result = receiver.recv() => {
-                        if let Ok((StoreScpEvent::OnFileStored, data)) = result {
-                            handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
-                        }
-                    }
+                if let Ok((StoreScpEvent::OnFileStored, data)) = receiver.recv().await {
+                    handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                 }
             }
         });
@@ -860,16 +782,10 @@ impl StoreScp {
     #[napi]
     pub fn on_study_completed(&self, handler: ThreadsafeFunction<ScpEventData, ()>) {
         let mut receiver = EVENT_CHANNEL.0.subscribe();
-        let shutdown_notify = SHUTDOWN_NOTIFY.clone();
         RUNTIME.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => break,
-                    result = receiver.recv() => {
-                        if let Ok((StoreScpEvent::OnStudyCompleted, data)) = result {
-                            handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
-                        }
-                    }
+                if let Ok((StoreScpEvent::OnStudyCompleted, data)) = receiver.recv().await {
+                    handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                 }
             }
         });
@@ -881,16 +797,10 @@ impl StoreScp {
     #[napi]
     pub fn on_error(&self, handler: ThreadsafeFunction<ScpEventData, ()>) {
         let mut receiver = EVENT_CHANNEL.0.subscribe();
-        let shutdown_notify = SHUTDOWN_NOTIFY.clone();
         RUNTIME.spawn(async move {
             loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => break,
-                    result = receiver.recv() => {
-                        if let Ok((StoreScpEvent::OnError, data)) = result {
-                            handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
-                        }
-                    }
+                if let Ok((StoreScpEvent::OnError, data)) = receiver.recv().await {
+                    handler.call(Ok(data), ThreadsafeFunctionCallMode::NonBlocking);
                 }
             }
         });
@@ -982,7 +892,7 @@ impl StoreScp {
      * });
      * ```
      */
-    #[napi(ts_args_type = "callback: (tags: Record<string, string>) => Record<string, string>")]
+    #[napi(ts_args_type = "callback: (err: Error | null, tags: Record<string, string>) => Record<string, string>")]
     pub fn on_before_store(&mut self, callback: ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>) {
         self.on_before_store = Some(Arc::new(callback));
     }

@@ -54,7 +54,7 @@ receiver.onStudyCompleted((err, event) => {
     console.log(`${study.series.length} series, total instances: ${study.series.reduce((sum, s) => sum + s.instances.length, 0)}`);
 });
 
-receiver.listen();
+receiver.start();
 ```
 
 ### Sending DICOM Files (StoreScu)
@@ -167,6 +167,60 @@ await file.saveAsDicom('anonymized.dcm');
 file.close();
 ```
 
+### DICOMweb Services
+
+node-dicom-rs provides DICOMweb servers for querying and retrieving DICOM objects over HTTP.
+
+#### QIDO-RS Server (Query)
+
+QIDO-RS allows clients to search for DICOM studies, series, and instances:
+
+```javascript
+import { QidoServer } from '@nuxthealth/node-dicom';
+
+const qidoServer = new QidoServer(8080);
+qidoServer.start();
+
+// Server is now listening on http://localhost:8080
+// Endpoints:
+//   GET /studies - Search for studies
+//   GET /series - Search for series
+//   GET /instances - Search for instances
+
+// Stop when done
+qidoServer.stop();
+```
+
+#### WADO-RS Server (Retrieval)
+
+WADO-RS provides standardized retrieval of DICOM files:
+
+```javascript
+import { WadoServer } from '@nuxthealth/node-dicom';
+
+const wadoConfig = {
+  storageType: 'filesystem',
+  basePath: '/path/to/dicom/files'
+};
+
+const wadoServer = new WadoServer(8081, wadoConfig);
+wadoServer.start();
+
+// Server is now listening on http://localhost:8081
+// Endpoints:
+//   GET /studies/{studyUID}
+//   GET /studies/{studyUID}/series/{seriesUID}
+//   GET /studies/{studyUID}/series/{seriesUID}/instances/{instanceUID}
+//   GET /studies/{studyUID}/metadata
+
+// Stop when done
+wadoServer.stop();
+```
+
+For filesystem storage, organize files as: `{basePath}/{studyUID}/{seriesUID}/{instanceUID}.dcm`
+
+For more details, see the [DICOMweb documentation](./docs/dicomweb.md).
+
 ## Documentation
 
 For detailed documentation, see:
@@ -232,7 +286,7 @@ receiver.onBeforeStore((tags) => {
     };
 });
 
-await receiver.listen();
+receiver.start();
 ```
 
 **Key Features:**
