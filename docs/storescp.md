@@ -1453,16 +1453,18 @@ receiver.onFileStored((err, event) => {
 
 The `onBeforeStore` callback allows you to intercept and modify DICOM tags **before** files are saved to disk. This is a powerful feature for anonymization, validation, tag normalization, and audit logging.
 
-**Important:** This is a callback (registered with a method), not an event listener.
+**Important:** This is an **async callback** (registered with a method), not an event listener. It returns a Promise.
 
 ```typescript
-// Register the callback BEFORE calling listen()
-receiver.onBeforeStore((tags) => {
-  // Modify tags as needed
+// Register the async callback BEFORE calling start()
+receiver.onBeforeStore(async (tags) => {
+  // Can now use await for async operations!
+  const anonId = await database.getOrCreateAnonymousId(tags.PatientID);
+  
   return {
     ...tags,
     PatientName: 'ANONYMOUS^PATIENT',
-    PatientID: generateAnonymousId(tags.PatientID)
+    PatientID: anonId
   };
 });
 
@@ -1472,22 +1474,24 @@ receiver.start();
 #### Callback Signature
 
 ```typescript
-type OnBeforeStoreCallback = (tags: Record<string, string>) => Record<string, string>;
+type OnBeforeStoreCallback = (tags: Record<string, string>) => Promise<Record<string, string>>;
 ```
 
 **Parameters:**
 - `tags`: Object containing the extracted DICOM tags as key-value pairs
 
 **Returns:**
-- Modified tags object with the same structure
+- **Promise** that resolves to modified tags object with the same structure
 
 **Important Notes:**
-1. The callback is **synchronous for each file** - it completes before that file is saved
-2. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
-3. Only tags specified in `extractTags` configuration are available
-4. You must return a complete tags object (can include the same values if no modification needed)
-5. If `extractTags` is empty or not configured, the callback won't be invoked
-6. Must call `onBeforeStore()` **before** calling `listen()`
+1. The callback is **async** - it can use `await` for database queries, API calls, etc.
+2. File storage waits for the Promise to resolve before saving the file
+3. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
+4. Only tags specified in `extractTags` configuration are available
+5. You must return a Promise that resolves to a complete tags object
+6. If `extractTags` is empty or not configured, the callback won't be invoked
+7. Must call `onBeforeStore()` **before** calling `start()`
+8. Promise rejections are logged and prevent the file from being saved
 
 #### Configuration Requirements
 
@@ -1510,10 +1514,11 @@ To use `onBeforeStore`, you must:
 ##### 1. Anonymization
 
 ```javascript
+// Simple in-memory mapping
 const patientMapping = new Map();
 let anonymousCounter = 1000;
 
-receiver.onBeforeStore((tags) => {
+receiver.onBeforeStore(async (tags) => {
   // Generate or retrieve anonymous ID
   let anonymousID = patientMapping.get(tags.PatientID);
   if (!anonymousID) {
@@ -1532,12 +1537,46 @@ receiver.onBeforeStore((tags) => {
       : 'ANONYMIZED STUDY'
   };
 });
+
+// Advanced: Async database lookup
+receiver.onBeforeStore(async (tags) => {
+  // Use await for database operations
+  const anonId = await db.query(
+    'SELECT anon_id FROM patient_mapping WHERE real_id = ?',
+    [tags.PatientID]
+  ).then(result => {
+    if (result.length > 0) {
+      return result[0].anon_id;
+    } else {
+      const newId = `ANON_${Date.now()}`;
+      db.execute(
+        'INSERT INTO patient_mapping (real_id, anon_id) VALUES (?, ?)',
+        [tags.PatientID, newId]
+      );
+      return newId;
+    }
+  });
+
+  // Async audit logging
+  await db.execute(
+    'INSERT INTO audit_log (timestamp, original_id, anon_id, study_uid) VALUES (?, ?, ?, ?)',
+    [new Date(), tags.PatientID, anonId, tags.StudyInstanceUID]
+  );
+
+  return {
+    ...tags,
+    PatientName: 'ANONYMOUS^PATIENT',
+    PatientID: anonId,
+    PatientBirthDate: '',
+    PatientSex: ''
+  };
+});
 ```
 
 ##### 2. Validation
 
 ```javascript
-receiver.onBeforeStore((tags) => {
+receiver.onBeforeStore(async (tags) => {
   // Validate required fields
   if (!tags.PatientID || !tags.StudyInstanceUID) {
     throw new Error('Missing required tags: PatientID or StudyInstanceUID');
@@ -1554,6 +1593,15 @@ receiver.onBeforeStore((tags) => {
     throw new Error(`Unsupported modality: ${tags.Modality}`);
   }
   
+  // Async validation against external service
+  const isValid = await fetch(`https://api.hospital.com/validate/patient/${tags.PatientID}`)
+    .then(res => res.json())
+    .then(data => data.valid);
+  
+  if (!isValid) {
+    throw new Error(`Patient ID not found in hospital registry: ${tags.PatientID}`);
+  }
+  
   return tags;
 });
 ```
@@ -1561,7 +1609,13 @@ receiver.onBeforeStore((tags) => {
 ##### 3. Tag Normalization
 
 ```javascript
-receiver.onBeforeStore((tags) => {
+receiver.onBeforeStore(async (tags) => {
+  // Fetch additional metadata from database
+  const metadata = await db.query(
+    'SELECT facility_code, department FROM facilities WHERE patient_id = ?',
+    [tags.PatientID]
+  ).then(result => result[0] || {});
+
   return {
     ...tags,
     // Normalize patient name to uppercase
@@ -1571,7 +1625,9 @@ receiver.onBeforeStore((tags) => {
     // Standardize study description
     StudyDescription: tags.StudyDescription?.trim() || '',
     // Add facility prefix to patient ID
-    PatientID: tags.PatientID ? `FACILITY_${tags.PatientID}` : ''
+    PatientID: tags.PatientID ? `${metadata.facility_code || 'UNK'}_${tags.PatientID}` : '',
+    // Enrich with department info
+    InstitutionName: metadata.department || 'UNKNOWN'
   };
 });
 ```
@@ -1579,20 +1635,34 @@ receiver.onBeforeStore((tags) => {
 ##### 4. Audit Logging
 
 ```javascript
-import { appendFileSync } from 'fs';
-
-receiver.onBeforeStore((tags) => {
-  // Log all incoming files for audit trail
-  const logEntry = {
-    timestamp: new Date().toISOString(),
-    patientID: tags.PatientID,
-    studyUID: tags.StudyInstanceUID,
-    modality: tags.Modality,
-    studyDate: tags.StudyDate,
-    studyDescription: tags.StudyDescription
-  };
+receiver.onBeforeStore(async (tags) => {
+  // Async logging to database
+  await db.execute(
+    `INSERT INTO dicom_audit_log 
+     (timestamp, patient_id, study_uid, modality, study_date, study_description, source_ip) 
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      new Date(),
+      tags.PatientID,
+      tags.StudyInstanceUID,
+      tags.Modality,
+      tags.StudyDate,
+      tags.StudyDescription,
+      'remote-source-ip'  // Could be passed via context
+    ]
+  );
   
-  appendFileSync('./audit-log.json', JSON.stringify(logEntry) + '\n');
+  // Async notification to monitoring service
+  await fetch('https://monitoring.hospital.com/api/dicom-received', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      timestamp: new Date().toISOString(),
+      patientID: tags.PatientID,
+      studyUID: tags.StudyInstanceUID,
+      modality: tags.Modality
+    })
+  });
   
   // Return unmodified tags
   return tags;
@@ -1604,8 +1674,31 @@ receiver.onBeforeStore((tags) => {
 ```typescript
 import { StoreScp } from '@nuxthealth/node-dicom';
 
-const anonymousMapping = new Map();
-let counter = 1000;
+// Simulate async database
+class AnonymizationDB {
+  private mapping = new Map();
+  private counter = 1000;
+  
+  async getOrCreateAnonId(realId: string): Promise<string> {
+    // Simulate database delay
+    await new Promise(resolve => setTimeout(resolve, 10));
+    
+    let anonId = this.mapping.get(realId);
+    if (!anonId) {
+      anonId = `ANON_${String(this.counter++).padStart(4, '0')}`;
+      this.mapping.set(realId, anonId);
+    }
+    return anonId;
+  }
+  
+  async logAnonymization(realId: string, anonId: string): Promise<void> {
+    // Simulate async audit logging
+    await new Promise(resolve => setTimeout(resolve, 5));
+    console.log(`[AUDIT] ${new Date().toISOString()}: ${realId} → ${anonId}`);
+  }
+}
+
+const db = new AnonymizationDB();
 
 const receiver = new StoreScp({
   port: 11115,
@@ -1624,16 +1717,15 @@ const receiver = new StoreScp({
   verbose: true
 });
 
-// Register anonymization callback
-receiver.onBeforeStore((tags) => {
+// Register async anonymization callback
+receiver.onBeforeStore(async (tags) => {
   console.log(`Anonymizing: ${tags.PatientName} (${tags.PatientID})`);
   
-  let anonymousID = anonymousMapping.get(tags.PatientID);
-  if (!anonymousID) {
-    anonymousID = `ANON_${String(counter++).padStart(4, '0')}`;
-    anonymousMapping.set(tags.PatientID, anonymousID);
-    console.log(`  New mapping: ${tags.PatientID} → ${anonymousID}`);
-  }
+  // Async database lookup
+  const anonymousID = await db.getOrCreateAnonId(tags.PatientID);
+  
+  // Async audit logging
+  await db.logAnonymization(tags.PatientID, anonymousID);
 
   return {
     ...tags,
@@ -1670,18 +1762,25 @@ receiver.start();
 
 #### Error Handling
 
-If the callback throws an error:
+If the callback throws an error or the Promise rejects:
 - The file will **not** be saved to disk
 - The sending SCU receives a DICOM error status
 - The association remains open for subsequent files
 - Error is logged if `verbose: true`
 
 ```typescript
-receiver.onBeforeStore((tags) => {
+receiver.onBeforeStore(async (tags) => {
   // Validation example
   if (!tags.PatientID) {
     throw new Error('PatientID is required');
   }
+  
+  // Async validation with external service
+  const patient = await fetch(`https://api.hospital.com/patients/${tags.PatientID}`)
+    .then(res => {
+      if (!res.ok) throw new Error(`Patient not found: ${tags.PatientID}`);
+      return res.json();
+    });
   
   // Business rule example
   if (tags.Modality === 'CT' && !tags.StudyDescription) {
@@ -1694,18 +1793,49 @@ receiver.onBeforeStore((tags) => {
 
 #### Performance Considerations
 
-1. **Per-file processing**: The callback is synchronous for each individual file, but the server handles multiple files asynchronously in parallel. Multiple incoming files are processed concurrently, each with its own callback invocation.
-2. **What's Fast Enough**:
-   - ✅ String manipulation (uppercase, trim, format)
-   - ✅ Map/object lookups (patient ID mapping)
-   - ✅ Simple validation (regex, length checks)
-   - ✅ In-memory operations (most use cases)
-   - ⚠️ Database queries (consider caching)
-   - ❌ Heavy CPU work (image processing, cryptography)
-   - ❌ Slow external API calls (unless cached)
-3. **Thread safety**: The callback is called from async Rust context via ThreadsafeFunction - perfectly safe for concurrent execution
-4. **Tag extraction overhead**: Only extract tags you need to modify
-5. **Memory**: Each callback invocation clones the tags HashMap (typically <1KB per file)
+1. **Async operations**: The callback now supports async/await for database queries, API calls, and other I/O operations
+2. **Per-file processing**: Each file's callback waits for the Promise to resolve before saving
+3. **Parallel processing**: The server handles multiple files asynchronously in parallel, each with its own callback invocation
+4. **What's Efficient**:
+   - ✅ Database queries (with connection pooling)
+   - ✅ API calls (with reasonable timeouts)
+   - ✅ Async I/O operations (logging, caching)
+   - ✅ String manipulation and validation
+   - ✅ In-memory lookups (Map, object access)
+   - ⚠️ Slow external services (consider timeouts and retries)
+   - ⚠️ Heavy computation (consider offloading to workers)
+   - ❌ Blocking operations (avoid synchronous file I/O)
+5. **Best Practices**:
+   - Use connection pooling for database operations
+   - Set reasonable timeouts for external API calls
+   - Cache frequently accessed data when possible
+   - Use `Promise.all()` for parallel async operations
+   - Handle Promise rejections to prevent file rejection
+6. **Thread safety**: The callback is called from async Rust context via ThreadsafeFunction - perfectly safe for concurrent execution
+7. **Tag extraction overhead**: Only extract tags you need to modify
+8. **Memory**: Each callback invocation clones the tags HashMap (typically <1KB per file)
+
+**Example: Optimized async operations**
+```typescript
+receiver.onBeforeStore(async (tags) => {
+  // Parallel async operations
+  const [anonId, metadata, isAuthorized] = await Promise.all([
+    db.getAnonymousId(tags.PatientID),
+    api.getStudyMetadata(tags.StudyInstanceUID),
+    authService.checkAccess(tags.PatientID)
+  ]);
+  
+  if (!isAuthorized) {
+    throw new Error('Unauthorized patient access');
+  }
+  
+  return {
+    ...tags,
+    PatientID: anonId,
+    InstitutionName: metadata.institution
+  };
+});
+```
 
 
 ### OnServerStarted (Event)

@@ -134,7 +134,7 @@ pub struct StoreScp {
     transfer_syntax_mode: TransferSyntaxMode,
     /// Custom transfer syntaxes
     transfer_syntaxes: Vec<String>,
-    /// Callback for modifying tags before storage (synchronous)
+    /// Callback for modifying tags before storage (async, returns Promise)
     on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
     /// Shutdown channel for graceful shutdown
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -809,28 +809,29 @@ impl StoreScp {
     /**
      * Register a callback to modify DICOM tags before files are saved.
      * 
-     * This callback is invoked **synchronously** for each received DICOM file, allowing you
+     * This callback is invoked **asynchronously** for each received DICOM file, allowing you
      * to modify tags before the file is written to disk. The callback receives the extracted
-     * tags as a plain object and must return a modified tags object.
+     * tags as a plain object and must return a Promise that resolves to modified tags.
      * 
      * **Important:** 
      * - You must configure `extractTags` to specify which tags should be extracted
      * - Only tags specified in `extractTags` will be available to modify
-     * - The callback blocks file storage, so keep operations fast
+     * - The callback is async and must return a Promise<Record<string, string>>
      * - Tags are passed and returned as `Record<string, string>` (key-value pairs)
      * - Must call this method BEFORE `listen()`
+     * - File storage waits for the Promise to resolve before saving
      * 
      * **Common Use Cases:**
-     * - **Anonymization**: Remove or replace patient-identifying information
-     * - **Tag Enrichment**: Add institution-specific metadata
+     * - **Anonymization**: Remove or replace patient-identifying information (with async lookups)
+     * - **Tag Enrichment**: Add institution-specific metadata (with database queries)
      * - **Validation**: Verify required tags are present (throw error to reject file)
      * - **Normalization**: Standardize tag formats across different sources
      * 
-     * @param callback - Synchronous function that receives tags and returns modified tags
+     * @param callback - Async function that receives tags and returns a Promise of modified tags
      * 
      * @example
      * ```typescript
-     * // Anonymization with patient ID mapping
+     * // Async anonymization with database lookup
      * const scp = new StoreScp({
      *   port: 11115,
      *   outDir: './anonymized',
@@ -838,16 +839,9 @@ impl StoreScp {
      *   extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
      * });
      * 
-     * const patientMapping = new Map();
-     * let anonCounter = 1000;
-     * 
-     * scp.onBeforeStore((tags) => {
-     *   // Get or create anonymous ID
-     *   let anonId = patientMapping.get(tags.PatientID);
-     *   if (!anonId) {
-     *     anonId = `ANON_${anonCounter++}`;
-     *     patientMapping.set(tags.PatientID, anonId);
-     *   }
+     * scp.onBeforeStore(async (tags) => {
+     *   // Async database lookup for anonymous ID
+     *   const anonId = await db.getOrCreateAnonId(tags.PatientID);
      *   
      *   return {
      *     ...tags,
@@ -865,14 +859,16 @@ impl StoreScp {
      * 
      * @example
      * ```typescript
-     * // Validation example
-     * scp.onBeforeStore((tags) => {
+     * // Async validation with external service
+     * scp.onBeforeStore(async (tags) => {
      *   if (!tags.PatientID || !tags.StudyInstanceUID) {
      *     throw new Error('Missing required patient or study identifiers');
      *   }
      *   
-     *   if (!/^\d+$/.test(tags.PatientID)) {
-     *     throw new Error('Invalid PatientID format - must be numeric');
+     *   // Validate against external service
+     *   const isValid = await validationService.checkPatientId(tags.PatientID);
+     *   if (!isValid) {
+     *     throw new Error('Invalid PatientID - not found in registry');
      *   }
      *   
      *   return tags; // No modifications, just validation
@@ -881,18 +877,21 @@ impl StoreScp {
      * 
      * @example
      * ```typescript
-     * // Tag normalization
-     * scp.onBeforeStore((tags) => {
+     * // Async tag enrichment with API call
+     * scp.onBeforeStore(async (tags) => {
+     *   // Fetch additional metadata from external API
+     *   const metadata = await fetchPatientMetadata(tags.PatientID);
+     *   
      *   return {
      *     ...tags,
      *     PatientName: tags.PatientName?.toUpperCase() || '',
-     *     PatientSex: tags.PatientSex?.toUpperCase() || 'O', // Default to 'Other'
-     *     StudyDescription: tags.StudyDescription?.trim() || 'UNKNOWN'
+     *     PatientSex: metadata.sex || 'O',
+     *     InstitutionName: metadata.institution || 'UNKNOWN'
      *   };
      * });
      * ```
      */
-    #[napi(ts_args_type = "callback: (err: Error | null, tags: Record<string, string>) => Record<string, string>")]
+    #[napi(ts_args_type = "callback: (tags: Record<string, string>) => Promise<Record<string, string>>")]
     pub fn on_before_store(&mut self, callback: ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>) {
         self.on_before_store = Some(Arc::new(callback));
     }

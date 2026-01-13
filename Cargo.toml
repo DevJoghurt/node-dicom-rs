@@ -12,8 +12,8 @@ default = ["transcode"]
 transcode = ["dep:dicom-pixeldata"]
 
 [dependencies]
-napi = { version = "3.7.0", default-features = false, features = ["napi8", "tokio_rt"] }
-napi-derive = { version = "3.4.0", features = ["type-def"] }
+napi = { version = "3.8.2", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = { version = "3.5.1", features = ["type-def"] }
 clap = { version = "4.5.53", features = ["derive"] }
 dicom-dump = "=0.9.0"
 dicom-object = "=0.9.0"

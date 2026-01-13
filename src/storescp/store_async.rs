@@ -468,37 +468,13 @@ async fn inner(
                                     if let Some(ref extracted_tags) = tags {
                                         info!("Extracted tags available, calling callback with {} tags", extracted_tags.len());
                                         
-                                        // Call the callback with return value to get modified tags back
-                                        use napi::threadsafe_function::ThreadsafeFunctionCallMode;
                                         use dicom_core::{dicom_value, DataElement, VR};
                                         
-                                        // Create a channel to receive the modified tags
-                                        let (tx, rx) = tokio::sync::oneshot::channel();
-                                        
-                                        // Call JS callback - it receives (null, tags) and returns modified tags
-                                        let status = callback_arc.call_with_return_value(
-                                            Ok(extracted_tags.clone()),
-                                            ThreadsafeFunctionCallMode::Blocking,
-                                            move |modified_result: Result<HashMap<String, String>, napi::Error>, _env| {
-                                                match modified_result {
-                                                    Ok(modified_tags) => {
-                                                        info!("Callback returned {} modified tags", modified_tags.len());
-                                                        let _ = tx.send(modified_tags);
-                                                    }
-                                                    Err(e) => {
-                                                        error!("Callback returned error: {:?}", e);
-                                                        let _ = tx.send(HashMap::new());
-                                                    }
-                                                }
-                                                Ok(())
-                                            }
-                                        );
-                                        info!("call_with_return_value status: {:?}", status);
-                                        
-                                        // Wait for the callback to complete and get modified tags
-                                        match rx.await {
+                                        // Call async JS callback - it receives tags and returns a Promise<modified_tags>
+                                        // call_async is itself async and waits for the Promise to resolve
+                                        match callback_arc.call_async(Ok(extracted_tags.clone())).await {
                                             Ok(modified_tags) if !modified_tags.is_empty() => {
-                                                info!("Successfully received {} modified tags", modified_tags.len());
+                                                info!("Successfully received {} modified tags from Promise", modified_tags.len());
                                                 // Update the DICOM object with modified tags
                                                 for (tag_name, new_value) in &modified_tags {
                                                     if let Ok(tag) = crate::utils::parse_tag(tag_name) {
@@ -516,10 +492,10 @@ async fn inner(
                                                 tags = Some(modified_tags);
                                             }
                                             Ok(_) => {
-                                                warn!("Callback returned empty tags");
+                                                warn!("Promise resolved but returned empty tags");
                                             }
                                             Err(e) => {
-                                                error!("Failed to receive modified tags: {:?}", e);
+                                                error!("Promise rejected or callback failed: {:?}", e);
                                             }
                                         }
                                     } else {
