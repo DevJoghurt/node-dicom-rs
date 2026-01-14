@@ -42,6 +42,21 @@ Demonstrates:
 
 Keep this running while sending files with StoreScu.
 
+### 2b. StoreScp with onBeforeStore - Async tag modification
+
+```bash
+node onBeforeStore.mjs
+```
+
+Demonstrates:
+- Async tag modification before storage
+- Error-first callback pattern
+- JSON tag serialization
+- Simulated database lookup
+- Real-time anonymization
+
+Keep this running and send files to see tag modifications in action.
+
 ### 3. StoreScu - Send DICOM files
 
 ```bash
@@ -80,14 +95,16 @@ curl http://localhost:8043/studies/1.3.6.1.4.1.9328.50.2.125354
 
 ```
 playground/
-├── README.md                  # This file
-├── downloadTestData.sh        # Download sample DICOM data
-├── dicomfile-demo.mjs        # DicomFile demo
-├── storescp-demo.mjs         # StoreScp demo  
-├── storescu-demo.mjs         # StoreScu demo
-├── dicomweb-demo.mjs         # QIDO-RS + WADO-RS demo
-├── testdata/                 # Downloaded test DICOM files
-└── test-received/            # Files received by StoreScp
+├── README.md                    # This file
+├── downloadTestData.sh          # Download sample DICOM data
+├── dicomfile-demo.mjs          # DicomFile demo
+├── storescp-demo.mjs           # StoreScp demo  
+├── test-onBeforeStore.mjs      # StoreScp with async tag modification demo
+├── storescu-demo.mjs           # StoreScu demo
+├── dicomweb-demo.mjs           # QIDO-RS + WADO-RS demo
+├── testdata/                   # Downloaded test DICOM files
+├── test-received/              # Files received by StoreScp demos
+└── test-output-onbeforestore/  # Files with modified tags from onBeforeStore demo
 ```
 
 ## Tips

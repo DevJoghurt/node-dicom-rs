@@ -15,7 +15,7 @@
     "@cornerstonejs/core": "4.15.7",
     "@cornerstonejs/dicom-image-loader": "4.15.7",
     "@cornerstonejs/tools": "4.15.7",
-    "@nuxthealth/node-dicom": "file:../..",
+    "@nuxthealth/node-dicom": "0.2.1",
     "dcmjs": "^0.47.1",
     "dicom-parser": "^1.8.21",
     "nuxt": "^4.2.2",

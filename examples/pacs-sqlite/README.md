@@ -54,10 +54,11 @@ open http://localhost:3000/viewer
 │         │                 │                  │             │
 │         │        ┌────────┴────────┐         │             │
 │         └────────►  SQLite Database ◄─────────┘             │
-│                  │ (.data/pacs.db) │                       │
+│                  │ (.data/db.sqlite)│                       │
 │                  │ - studies       │                       │
 │                  │ - series        │                       │
 │                  │ - instances     │                       │
+│                  │ - patient_map.. │                       │
 │                  └─────────────────┘                       │
 │                         │                                  │
 │                  ┌──────▼───────────────────┐              │
@@ -83,7 +84,7 @@ open http://localhost:3000/viewer
 - **Nuxt 4** - Full-stack Vue framework with file-based routing
 - **Nitro** - Server engine with hot reload and auto-imports
 - **SQLite** - Embedded database (no external services needed)
-- **Cornerstone3D v4.14.5** - Medical imaging viewer with tools
+- **Cornerstone3D** - Medical imaging viewer with tools
 - **node-dicom-rs** - High-performance Rust-powered DICOM operations
 
 ### ⚡ Developer Experience
@@ -167,11 +168,13 @@ pacs-sqlite/
 │       └── studies.get.ts      # Get studies endpoint
 │
 ├── scripts/                # Utility scripts
+│   ├── downloadTestData.sh    # Download test DICOM files
 │   ├── send-test-files.mjs    # Send DICOM files
-│   └── query-studies.mjs      # Query QIDO-RS
+│   ├── query-studies.mjs      # Query QIDO-RS
+│   └── inspect-db.mjs         # Inspect SQLite database
 │
 ├── .data/                  # Runtime data (git-ignored)
-│   ├── pacs.db            # SQLite database
+│   ├── db.sqlite          # SQLite database
 │   └── dicom/             # DICOM file storage
 │       └── {studyUID}/
 │           └── {seriesUID}/
@@ -233,6 +236,19 @@ CREATE TABLE instances (
 CREATE INDEX idx_instance_series ON instances(series_instance_uid);
 ```
 
+**patient_mapping** - Anonymization mapping
+```sql
+CREATE TABLE patient_mapping (
+  original_patient_id TEXT PRIMARY KEY,
+  original_patient_name TEXT,
+  anonymized_patient_id TEXT NOT NULL,
+  anonymized_patient_name TEXT NOT NULL,
+  anonymized_birth_date TEXT NOT NULL,
+  anonymized_sex TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
 ### StoreSCP Configuration
 
 Located in `server/plugins/02.storescp.ts`:
@@ -261,7 +277,7 @@ const storeScp = new StoreScp({
           └── {instanceUID}.dcm
 ```
 
-**Anonymization**: Uses `onBeforeStore` callback to generate fake patient data before saving.
+**Anonymization**: Uses async `onBeforeStore` callback with error-first pattern to generate fake patient data and maintain persistent mappings in database before saving.
 
 ### QIDO-RS Configuration
 
@@ -326,24 +342,40 @@ To protect privacy, incoming DICOM files are automatically anonymized with consi
 **Implementation** in `server/plugins/02.storescp.ts`:
 
 ```typescript
-storeScp.onBeforeStore((tags) => {
-  const patientId = tags.PatientID || 'UNKNOWN';
-  const fakeData = generateFakePatientData(patientId);
+storeScp.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
   
-  return {
-    ...tags,
-    PatientName: fakeData.patientName,
-    PatientID: fakeData.patientId,
-    PatientBirthDate: fakeData.patientBirthDate,
-    PatientSex: fakeData.patientSex
+  const tags = JSON.parse(tagsJson);
+  const originalPatientID = tags.PatientID || 'UNKNOWN';
+  
+  // Generate deterministic fake data
+  const fakeData = generateFakePatientData(originalPatientID);
+  
+  // Store mapping in database (INSERT OR IGNORE for race conditions)
+  await db.sql`INSERT OR IGNORE INTO patient_mapping ...`;
+  
+  // Fetch mapping to ensure consistency
+  const result = await db.sql`SELECT * FROM patient_mapping ...`;
+  const mapping = result.rows[0];
+  
+  // Return only modified patient demographic tags
+  const modified = {
+    PatientName: mapping.anonymized_patient_name,
+    PatientID: mapping.anonymized_patient_id,
+    PatientBirthDate: mapping.anonymized_birth_date,
+    PatientSex: mapping.anonymized_sex
   };
+  
+  return JSON.stringify(modified);
 });
 ```
 
 **Characteristics:**
-- **Consistent**: Same patient ID always generates same fake data
+- **Consistent**: Same original patient ID always gets same anonymized data (via database mapping)
 - **Realistic**: Names, dates, and demographics look authentic
-- **Seeded**: Uses SHA-256 hash of patient ID as random seed
+- **Deterministic**: Uses SHA-256 hash of patient ID as random seed for initial generation
+- **Persistent**: Mappings stored in database to ensure consistency across all series/studies
+- **Race-safe**: Uses INSERT OR IGNORE to handle concurrent processing of same patient
 - **Diverse**: Multiple name combinations and demographics
 
 **Example Output:**
@@ -375,16 +407,14 @@ npm run dev
 Query the SQLite database directly:
 
 ```bash
-# Using better-sqlite3 REPL
-node
-> const Database = require('better-sqlite3');
-> const db = new Database('.data/pacs.db');
-> db.prepare('SELECT * FROM studies').all();
+# Using inspect-db script (recommended)
+node scripts/inspect-db.mjs
 
 # Or use sqlite3 CLI
-sqlite3 .data/pacs.db
+sqlite3 .data/db.sqlite
 sqlite> SELECT * FROM studies;
 sqlite> SELECT COUNT(*) FROM instances;
+sqlite> SELECT * FROM patient_mapping;
 ```
 
 ### Testing Services
@@ -435,8 +465,14 @@ npm run preview
 # Send test DICOM files
 node scripts/send-test-files.mjs <directory>
 
-# Query studies
+# Query studies via QIDO-RS
 node scripts/query-studies.mjs
+
+# Inspect SQLite database
+node scripts/inspect-db.mjs
+
+# Download test data
+cd scripts && ./downloadTestData.sh
 ```
 
 ## Production Deployment
@@ -459,7 +495,7 @@ Create `.env` file:
 
 ```bash
 # Database path
-DATABASE_PATH=./.data/pacs.db
+DATABASE_PATH=./.data/db.sqlite
 
 # DICOM storage path
 DICOM_STORAGE_PATH=./.data/dicom
@@ -569,7 +605,7 @@ SQLite database locked by another process:
 pkill -f node
 
 # Remove lock file if exists
-rm .data/pacs.db-wal .data/pacs.db-shm
+rm .data/db.sqlite-wal .data/db.sqlite-shm
 
 # Restart
 npm run dev
@@ -843,26 +879,23 @@ dicomImageLoader.external.dicomParser = dicomParser;
 
 ### SQLite Better-SQLite3
 
-**Synchronous API** for predictable transactions:
+The database is managed by Nuxt/Nitro's built-in database utilities which use better-sqlite3 under the hood:
+
 ```typescript
-const db = new Database('.data/pacs.db');
-const stmt = db.prepare('INSERT INTO studies VALUES (?, ?, ?)');
-stmt.run(studyUID, patientName, patientID);
+const db = useDatabase();
+const result = await db.sql`SELECT * FROM studies WHERE patient_id = ${patientId}`;
+const studies = result.rows;  // Access .rows property for results
 ```
 
 **WAL Mode** for better concurrency:
 ```typescript
-db.pragma('journal_mode = WAL');
+await db.exec('PRAGMA journal_mode = WAL');
 ```
 
-**Transactions** for atomic operations:
+**Tagged Template Literals** for safe queries:
 ```typescript
-const insert = db.transaction((studies) => {
-  for (const study of studies) {
-    insertStmt.run(study);
-  }
-});
-insert(studyArray);
+// Automatic parameter escaping
+await db.sql`INSERT INTO studies VALUES (${studyUID}, ${patientName}, ${patientID})`;
 ```
 
 ## Learn More

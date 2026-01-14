@@ -191,6 +191,8 @@ qidoServer.start();
 qidoServer.stop();
 ```
 
+For more details, see the [QIDO-RS Guide](./docs/qido-rs.md).
+
 #### WADO-RS Server (Retrieval)
 
 WADO-RS provides standardized retrieval of DICOM files:
@@ -219,7 +221,7 @@ wadoServer.stop();
 
 For filesystem storage, organize files as: `{basePath}/{studyUID}/{seriesUID}/{instanceUID}.dcm`
 
-For more details, see the [DICOMweb documentation](./docs/dicomweb.md).
+For more details, see the [QIDO-RS Guide](./docs/wado-rs.md).
 
 ## Documentation
 
@@ -312,7 +314,7 @@ receiver.start();
 - Format standardization
 - PHI removal for GDPR/HIPAA compliance
 
-See [demos](./playground/demos/README.md#onbeforestore-callback) for complete examples.
+See [demos](./playground/README.md) for complete examples.
 
 ### TypeScript Autocomplete
 
