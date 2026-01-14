@@ -957,6 +957,7 @@ if (failures.length > 0) {
 ```
 
 ## Complete Example
+```typescript
     const sender = new StoreScu({
         addr: remoteAddress,
         callingAeTitle: 'HOSPITAL-SCU',
@@ -1134,7 +1135,6 @@ async function sendInBatches(files: string[], remoteAddress: string, batchSize =
 
     return results;
 }
-```
 ```
 
 ## Tips

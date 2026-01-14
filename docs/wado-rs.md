@@ -604,20 +604,39 @@ The WADO-RS server architecture:
 
 ## Roadmap
 
-- [x] Basic instance retrieval
-- [x] Instance metadata retrieval
-- [x] Content negotiation
-- [x] Filesystem storage backend
-- [ ] Study/series retrieval with multipart responses
-- [ ] Frame extraction and retrieval
-- [ ] Pixel data transcoding
-- [ ] Rendered/thumbnail endpoints
-- [ ] S3 storage backend
-- [ ] Compression support (gzip)
-- [ ] Proper DICOM JSON serialization
-- [ ] Bulkdata retrieval
-- [ ] Query parameter support
+### Implemented ✅
+
+- [x] Basic instance retrieval - GET /studies/{uid}/series/{uid}/instances/{uid}
+- [x] Instance metadata retrieval - GET .../instances/{uid}/metadata
+- [x] Study metadata retrieval - GET /studies/{uid}/metadata
+- [x] Series metadata retrieval - GET /studies/{uid}/series/{uid}/metadata
+- [x] Content negotiation (Accept header handling)
+- [x] DICOM format (application/dicom)
+- [x] DICOM JSON format (application/dicom+json)
+- [x] Filesystem storage backend with hierarchical file organization
+- [x] S3 storage backend (S3-compatible object storage)
+- [x] Frame extraction and retrieval - GET .../instances/{uid}/frames/{frameList}
+- [x] Rendered endpoint with windowing - GET .../instances/{uid}/rendered
+- [x] Thumbnail endpoint - GET .../instances/{uid}/thumbnail
+- [x] Image rendering with automatic VOI LUT support
+- [x] Custom windowing parameters (window center/width)
+- [x] Viewport transformation (resizing with aspect ratio)
+- [x] Quality control for JPEG compression
+- [x] Bulkdata retrieval - GET .../instances/{uid}/bulkdata/{attributePath}
+- [x] Query parameter support (viewport, quality, window)
+- [x] Feature flags for endpoint control
+- [x] CORS support with configurable origins
+
+### Planned 🔄
+
+- [ ] Study/series retrieval with multipart responses (scans entire storage)
+- [ ] Pixel data transcoding (JPEG/JPEG2000/PNG conversion)
+- [ ] Compression support (gzip for responses)
+- [ ] DICOM XML format (application/dicom+xml)
 - [ ] ETag/caching support
+- [ ] Proper HTTP caching headers
+- [ ] Streaming responses for large files
+- [ ] Authentication and authorization
 
 ## References
 

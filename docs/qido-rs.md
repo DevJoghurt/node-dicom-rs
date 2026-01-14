@@ -12,8 +12,10 @@ The QIDO-RS server provides a **high-level, developer-friendly API** that comple
 ✅ **No JSON Complexity** - Builders handle DICOM JSON format automatically  
 ✅ **Full Type Safety** - TypeScript auto-completion for all attributes  
 ✅ **DICOM Compliant** - Automatic tag numbers, VR codes, proper formatting  
+✅ **Async/Await Support** - Use async handlers for database and API queries  
 ✅ **Separate Handlers** - One handler per query level (Studies, Series, Instances)  
-✅ **CORS Support** - Built-in CORS configuration for web applications
+✅ **CORS Support** - Built-in CORS configuration for web applications  
+✅ **Error Handling** - Proper error-first callback pattern
 
 ## Quick Start
 
@@ -182,7 +184,105 @@ createQidoEmptyResponse(): string  // Returns "[]" for error cases
 
 ## Handler Registration
 
-The QIDO-RS API provides four separate handlers, one for each query level defined in DICOM PS3.18:
+The QIDO-RS API provides four separate handlers, one for each query level defined in DICOM PS3.18. Handlers support both **synchronous** and **asynchronous** patterns.
+
+### Async/Await Support
+
+Handlers can be **synchronous** (returning `Promise.resolve()`) or **async** (using `async/await`):
+
+```typescript
+// Synchronous handler - for immediate data (cache, static data)
+server.onSearchForStudies((err, query) => {
+  if (err) return createQidoEmptyResponse();
+  const studies = memoryCache.get(query.patientId);
+  return Promise.resolve(JSON.stringify(studies));  // ✅ Must wrap in Promise
+});
+
+// Asynchronous handler - for database/API queries
+server.onSearchForSeries(async (err, query) => {
+  if (err) return createQidoEmptyResponse();
+  const series = await database.query('SELECT * FROM series WHERE study_uid = ?', [query.studyInstanceUid]);
+  return JSON.stringify(series);  // ✅ Async automatically returns Promise
+});
+```
+
+### Callback Patterns
+
+**Pattern 1: Synchronous with Promise.resolve()**
+
+Use when data is immediately available (in-memory cache, static data):
+
+```javascript
+server.onSearchForStudies((err, query) => {
+  if (err) throw err;
+  const studies = memoryCache.get(query.patientId);
+  return Promise.resolve(JSON.stringify(studies));  // ✅ REQUIRED
+});
+```
+
+**Why Promise.resolve()?** The Rust implementation uses NAPI-RS's `ThreadsafeFunction<T, Promise<R>>` type, which always expects a Promise return value. For synchronous callbacks, you must explicitly wrap the result.
+
+**Pattern 2: Async/Await**
+
+Use when you need asynchronous operations:
+
+```javascript
+server.onSearchForSeries(async (err, query) => {
+  if (err) throw err;
+  
+  const series = await db.query(
+    'SELECT * FROM series WHERE study_uid = $1',
+    [query.studyInstanceUid]
+  );
+  
+  return JSON.stringify(series);  // ✅ Async auto-wraps in Promise
+});
+```
+
+**Pattern 3: Multiple Async Operations**
+
+Use `Promise.all()` for parallel operations:
+
+```javascript
+server.onSearchForStudyInstances(async (err, query) => {
+  if (err) throw err;
+  
+  const [instances, permissions] = await Promise.all([
+    db.query('SELECT * FROM instances WHERE study_uid = $1', [query.studyInstanceUid]),
+    checkUserPermissions(query.studyInstanceUid)
+  ]);
+  
+  return JSON.stringify(instances.filter(i => permissions.canAccess(i.id)));
+});
+```
+
+### Error Handling
+
+Errors thrown in callbacks are caught by Rust and returned as HTTP 500 responses:
+
+```javascript
+server.onSearchForStudies(async (err, query) => {
+  if (err) throw err;  // Handle QIDO errors
+  
+  try {
+    const data = await database.query(...);
+    return JSON.stringify(data);
+  } catch (dbError) {
+    console.error('Database error:', dbError);
+    throw new Error(`Database query failed: ${dbError.message}`);  // HTTP 500
+  }
+});
+```
+
+The client will receive:
+
+```json
+{
+  "error": "Promise rejected: Error { message: \"Database query failed: ...\" }"
+}
+```
+
+### Complete Handler Registration Example
 
 ```typescript
 import { 
@@ -203,76 +303,93 @@ const server = new QidoServer(8042, {
 });
 
 // Handler 1: Search for Studies (GET /studies)
-server.onSearchForStudies((err, query) => {
+server.onSearchForStudies(async (err, query) => {
   if (err) return createQidoEmptyResponse();
   
-  // query.patientId, query.studyDate, etc. are properly typed
-  const studies = database.findStudies(query);
-  
-  const results = studies.map(s => {
-    const result = new QidoStudyResult();
-    result.patientName(s.patientName);
-    result.patientId(s.patientId);
-    result.studyInstanceUid(s.studyUid);
-    result.studyDate(s.studyDate);
-    return result;
-  });
-  
-  return createQidoStudiesResponse(results);
+  try {
+    const studies = await database.findStudies(query);
+    
+    const results = studies.map(s => {
+      const result = new QidoStudyResult();
+      result.patientName(s.patientName);
+      result.patientId(s.patientId);
+      result.studyInstanceUid(s.studyUid);
+      result.studyDate(s.studyDate);
+      return result;
+    });
+    
+    return createQidoStudiesResponse(results);
+  } catch (error) {
+    console.error('Search studies error:', error);
+    return createQidoEmptyResponse();
+  }
 });
 
 // Handler 2: Search for Series (GET /studies/{uid}/series)
-server.onSearchForSeries((err, query) => {
+server.onSearchForSeries(async (err, query) => {
   if (err) return createQidoEmptyResponse();
   
-  // query.studyInstanceUid is extracted from URL path
-  const series = database.getSeriesByStudy(query.studyInstanceUid);
-  
-  const results = series.map(s => {
-    const result = new QidoSeriesResult();
-    result.seriesInstanceUid(s.seriesUid);
-    result.modality(s.modality);
-    result.seriesNumber(s.seriesNumber);
-    return result;
-  });
-  
-  return createQidoSeriesResponse(results);
+  try {
+    const series = await database.getSeriesByStudy(query.studyInstanceUid);
+    
+    const results = series.map(s => {
+      const result = new QidoSeriesResult();
+      result.seriesInstanceUid(s.seriesUid);
+      result.modality(s.modality);
+      result.seriesNumber(s.seriesNumber);
+      return result;
+    });
+    
+    return createQidoSeriesResponse(results);
+  } catch (error) {
+    console.error('Search series error:', error);
+    return createQidoEmptyResponse();
+  }
 });
 
 // Handler 3: Search for Instances in Study (GET /studies/{uid}/instances)
-server.onSearchForStudyInstances((err, query) => {
+server.onSearchForStudyInstances(async (err, query) => {
   if (err) return createQidoEmptyResponse();
   
-  const instances = database.getInstancesByStudy(query.studyInstanceUid);
-  
-  const results = instances.map(i => {
-    const result = new QidoInstanceResult();
-    result.sopInstanceUid(i.sopInstanceUid);
-    result.instanceNumber(i.instanceNumber);
-    return result;
-  });
-  
-  return createQidoInstancesResponse(results);
+  try {
+    const instances = await database.getInstancesByStudy(query.studyInstanceUid);
+    
+    const results = instances.map(i => {
+      const result = new QidoInstanceResult();
+      result.sopInstanceUid(i.sopInstanceUid);
+      result.instanceNumber(i.instanceNumber);
+      return result;
+    });
+    
+    return createQidoInstancesResponse(results);
+  } catch (error) {
+    console.error('Search instances error:', error);
+    return createQidoEmptyResponse();
+  }
 });
 
 // Handler 4: Search for Instances in Series (GET /studies/{uid}/series/{uid}/instances)
-server.onSearchForSeriesInstances((err, query) => {
+server.onSearchForSeriesInstances(async (err, query) => {
   if (err) return createQidoEmptyResponse();
   
-  // Both UIDs extracted from URL path
-  const instances = database.getInstancesBySeries(
-    query.studyInstanceUid,
-    query.seriesInstanceUid
-  );
-  
-  const results = instances.map(i => {
-    const result = new QidoInstanceResult();
-    result.sopInstanceUid(i.sopInstanceUid);
-    result.instanceNumber(i.instanceNumber);
-    return result;
-  });
-  
-  return createQidoInstancesResponse(results);
+  try {
+    const instances = await database.getInstancesBySeries(
+      query.studyInstanceUid,
+      query.seriesInstanceUid
+    );
+    
+    const results = instances.map(i => {
+      const result = new QidoInstanceResult();
+      result.sopInstanceUid(i.sopInstanceUid);
+      result.instanceNumber(i.instanceNumber);
+      return result;
+    });
+    
+    return createQidoInstancesResponse(results);
+  } catch (error) {
+    console.error('Search series instances error:', error);
+    return createQidoEmptyResponse();
+  }
 });
 
 server.start();
@@ -540,6 +657,84 @@ process.on('SIGINT', () => {
   qido.stop();
   process.exit(0);
 });
+```
+
+### Real-World Example with PostgreSQL
+
+Here's a complete example using a PostgreSQL database with connection pooling and async handlers:
+
+```javascript
+import { QidoServer, QidoStudyResult, createQidoStudiesResponse, createQidoEmptyResponse } from 'node-dicom-rs'
+import pg from 'pg'
+
+const pool = new pg.Pool({
+  host: 'localhost',
+  database: 'pacs',
+  user: 'pacs_user',
+  password: process.env.DB_PASSWORD,
+  max: 20  // Connection pool size
+})
+
+const qido = new QidoServer(8080, {
+  enableCors: true,
+  corsAllowedOrigins: 'https://viewer.example.com'
+})
+
+// Search for Studies with database query
+qido.onSearchForStudies(async (err, query) => {
+  if (err) return createQidoEmptyResponse()
+  
+  const client = await pool.connect()
+  try {
+    const result = await client.query(`
+      SELECT 
+        study_instance_uid,
+        patient_name,
+        patient_id,
+        patient_birth_date,
+        study_date,
+        study_description,
+        modalities_in_study
+      FROM studies
+      WHERE 
+        ($1::text IS NULL OR patient_id ILIKE $1)
+        AND ($2::text IS NULL OR patient_name ILIKE $2)
+        AND ($3::text IS NULL OR study_date >= $3)
+        AND ($4::text IS NULL OR study_date <= $4)
+      ORDER BY study_date DESC
+      LIMIT ${query.limit || 100}
+      OFFSET ${query.offset || 0}
+    `, [
+      query.patientId ? `%${query.patientId}%` : null,
+      query.patientName ? `%${query.patientName}%` : null,
+      query.studyDate,
+      null  // studyDateTo not in standard query params
+    ])
+    
+    const results = result.rows.map(row => {
+      const r = new QidoStudyResult()
+      r.studyInstanceUid(row.study_instance_uid)
+      r.patientName(row.patient_name)
+      r.patientId(row.patient_id)
+      r.patientBirthDate(row.patient_birth_date)
+      r.studyDate(row.study_date)
+      r.studyDescription(row.study_description)
+      r.modalitiesInStudy(row.modalities_in_study)
+      return r
+    })
+    
+    return createQidoStudiesResponse(results)
+    
+  } catch (error) {
+    console.error('Database error:', error)
+    return createQidoEmptyResponse()
+  } finally {
+    client.release()
+  }
+})
+
+qido.start()
+console.log('QIDO-RS server with PostgreSQL backend running on port 8080')
 ```
 
 ## Benefits
