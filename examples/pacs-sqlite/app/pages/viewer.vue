@@ -35,6 +35,9 @@
             <div class="study-info">
               <strong>{{ getPatientName(study) }}</strong>
               <div class="study-meta">
+                🎂 {{ formatDate(study['00100030']?.Value?.[0]) }}
+              </div>
+              <div class="study-meta">
                 📅 {{ formatDate(study['00080020']?.Value?.[0]) }}
               </div>
               <div class="study-meta">
