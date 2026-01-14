@@ -225,11 +225,11 @@ For more details, see the [DICOMweb documentation](./docs/dicomweb.md).
 
 For detailed documentation, see:
 
-- **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends
+- **[StoreScp Guide](./docs/storescp.md)** - Receiving DICOM files, tag extraction, storage backends, async tag modification
 - **[StoreScu Guide](./docs/storescu.md)** - Sending DICOM files, transfer syntaxes, batch operations
 - **[DicomFile Guide](./docs/dicomfile.md)** - Reading files, extracting metadata, pixel data operations
-- **[Tag Extraction Guide](./docs/tag-extraction.md)** - Tag extraction patterns and examples
-- **[Helper Functions Guide](./docs/helpers.md)** - Utility functions for tags, SOP classes, and transfer syntaxes
+- **[QIDO-RS Guide](./docs/qido-rs.md)** - Query service for searching DICOM studies, series, and instances
+- **[WADO-RS Guide](./docs/wado-rs.md)** - Retrieval service for accessing DICOM objects over HTTP
 
 ## Key Features
 
