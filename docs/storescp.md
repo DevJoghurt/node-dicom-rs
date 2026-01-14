@@ -1453,19 +1453,25 @@ receiver.onFileStored((err, event) => {
 
 The `onBeforeStore` callback allows you to intercept and modify DICOM tags **before** files are saved to disk. This is a powerful feature for anonymization, validation, tag normalization, and audit logging.
 
-**Important:** This is an **async callback** (registered with a method), not an event listener. It returns a Promise.
+**Important:** This is an **async callback** (registered with a method), not an event listener. It follows the error-first callback pattern and uses JSON for data exchange.
 
 ```typescript
 // Register the async callback BEFORE calling start()
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Can now use await for async operations!
   const anonId = await database.getOrCreateAnonymousId(tags.PatientID);
   
-  return {
+  const modified = {
     ...tags,
     PatientName: 'ANONYMOUS^PATIENT',
     PatientID: anonId
   };
+  
+  return JSON.stringify(modified);
 });
 
 receiver.start();
@@ -1474,24 +1480,38 @@ receiver.start();
 #### Callback Signature
 
 ```typescript
-type OnBeforeStoreCallback = (tags: Record<string, string>) => Promise<Record<string, string>>;
+type OnBeforeStoreCallback = (err: Error | null, tagsJson: string) => Promise<string>;
 ```
 
 **Parameters:**
-- `tags`: Object containing the extracted DICOM tags as key-value pairs
+- `err`: Error object (typically null unless internal error occurs)
+- `tagsJson`: JSON string containing the extracted DICOM tags
 
 **Returns:**
-- **Promise** that resolves to modified tags object with the same structure
+- **Promise** that resolves to JSON string of modified tags
 
 **Important Notes:**
-1. The callback is **async** - it can use `await` for database queries, API calls, etc.
-2. File storage waits for the Promise to resolve before saving the file
-3. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
-4. Only tags specified in `extractTags` configuration are available
-5. You must return a Promise that resolves to a complete tags object
-6. If `extractTags` is empty or not configured, the callback won't be invoked
-7. Must call `onBeforeStore()` **before** calling `start()`
-8. Promise rejections are logged and prevent the file from being saved
+1. The callback follows **error-first pattern**: `async (err, tagsJson) => Promise<string>`
+2. Tags are provided as **JSON string** - must use `JSON.parse()` to read and `JSON.stringify()` to return
+3. The callback is **async** - it can use `await` for database queries, API calls, etc.
+4. File storage waits for the Promise to resolve before saving the file
+5. The **server is fully asynchronous** - multiple files are processed in parallel, each with independent callback execution
+6. Only tags specified in `extractTags` configuration are available
+7. You must return a Promise that resolves to a JSON string of modified tags
+8. If `extractTags` is empty or not configured, the callback won't be invoked
+9. Must call `onBeforeStore()` **before** calling `start()`
+10. Promise rejections are logged and prevent the file from being saved
+
+**Critical Limitations:**
+1. **Only return patient demographic tags** (PatientName, PatientID, PatientBirthDate, PatientSex) from your callback
+   - ❌ Do NOT return pixel-related tags (BitsAllocated, Rows, Columns, PixelSpacing, etc.)
+   - ❌ Do NOT return technical image metadata tags
+   - ✅ Only return the specific tags you actually modified
+   - Returning unmodified technical tags can corrupt the DICOM file structure and make images unreadable
+2. **Use case**: This callback is designed for **anonymization and patient data modification only**
+   - Not intended for modifying image pixel data or technical parameters
+   - Modifying pixel-related metadata will break image viewers (e.g., CornerstoneJS)
+3. **Best practice**: Extract only the tags you need to modify in `extractTags`, return only those modified tags from the callback
 
 #### Configuration Requirements
 
@@ -1518,7 +1538,11 @@ To use `onBeforeStore`, you must:
 const patientMapping = new Map();
 let anonymousCounter = 1000;
 
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Generate or retrieve anonymous ID
   let anonymousID = patientMapping.get(tags.PatientID);
   if (!anonymousID) {
@@ -1526,20 +1550,25 @@ receiver.onBeforeStore(async (tags) => {
     patientMapping.set(tags.PatientID, anonymousID);
   }
 
-  return {
-    ...tags,
+  // IMPORTANT: Only return the tags you actually modified!
+  // Do NOT return all tags with spread operator (...tags)
+  // This prevents corruption of pixel data and technical metadata
+  const modified = {
     PatientName: 'ANONYMOUS^PATIENT',
     PatientID: anonymousID,
     PatientBirthDate: '',
-    PatientSex: '',
-    StudyDescription: tags.StudyDescription 
-      ? `ANONYMIZED - ${tags.StudyDescription}` 
-      : 'ANONYMIZED STUDY'
+    PatientSex: ''
   };
+  
+  return JSON.stringify(modified);
 });
 
 // Advanced: Async database lookup
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Use await for database operations
   const anonId = await db.query(
     'SELECT anon_id FROM patient_mapping WHERE real_id = ?',
@@ -1558,25 +1587,31 @@ receiver.onBeforeStore(async (tags) => {
   });
 
   // Async audit logging
+  // Async audit logging
   await db.execute(
     'INSERT INTO audit_log (timestamp, original_id, anon_id, study_uid) VALUES (?, ?, ?, ?)',
     [new Date(), tags.PatientID, anonId, tags.StudyInstanceUID]
   );
 
-  return {
-    ...tags,
+  // Only return modified patient tags - not all tags
+  const modified = {
     PatientName: 'ANONYMOUS^PATIENT',
     PatientID: anonId,
     PatientBirthDate: '',
     PatientSex: ''
   };
+  
+  return JSON.stringify(modified);
 });
-```
 
 ##### 2. Validation
 
 ```javascript
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Validate required fields
   if (!tags.PatientID || !tags.StudyInstanceUID) {
     throw new Error('Missing required tags: PatientID or StudyInstanceUID');
@@ -1602,40 +1637,48 @@ receiver.onBeforeStore(async (tags) => {
     throw new Error(`Patient ID not found in hospital registry: ${tags.PatientID}`);
   }
   
-  return tags;
+  return JSON.stringify(tags);
 });
 ```
 
 ##### 3. Tag Normalization
 
 ```javascript
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Fetch additional metadata from database
   const metadata = await db.query(
     'SELECT facility_code, department FROM facilities WHERE patient_id = ?',
     [tags.PatientID]
   ).then(result => result[0] || {});
 
-  return {
-    ...tags,
+  // Only return the tags you actually modified
+  const modified = {
     // Normalize patient name to uppercase
     PatientName: tags.PatientName?.toUpperCase() || '',
     // Ensure consistent date format (YYYYMMDD)
     PatientBirthDate: tags.PatientBirthDate?.replace(/[^0-9]/g, '') || '',
-    // Standardize study description
-    StudyDescription: tags.StudyDescription?.trim() || '',
     // Add facility prefix to patient ID
     PatientID: tags.PatientID ? `${metadata.facility_code || 'UNK'}_${tags.PatientID}` : '',
     // Enrich with department info
     InstitutionName: metadata.department || 'UNKNOWN'
   };
+  
+  return JSON.stringify(modified);
 });
 ```
 
 ##### 4. Audit Logging
 
 ```javascript
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Async logging to database
   await db.execute(
     `INSERT INTO dicom_audit_log 
@@ -1665,7 +1708,7 @@ receiver.onBeforeStore(async (tags) => {
   });
   
   // Return unmodified tags
-  return tags;
+  return JSON.stringify(tags);
 });
 ```
 
@@ -1718,7 +1761,11 @@ const receiver = new StoreScp({
 });
 
 // Register async anonymization callback
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   console.log(`Anonymizing: ${tags.PatientName} (${tags.PatientID})`);
   
   // Async database lookup
@@ -1727,19 +1774,18 @@ receiver.onBeforeStore(async (tags) => {
   // Async audit logging
   await db.logAnonymization(tags.PatientID, anonymousID);
 
-  return {
+  const modified = {
     ...tags,
+  // Only return modified patient demographic tags
+  const modified = {
     PatientName: 'ANONYMOUS^PATIENT',
     PatientID: anonymousID,
     PatientBirthDate: '',
-    PatientSex: '',
-    StudyDescription: tags.StudyDescription 
-      ? `ANONYMIZED - ${tags.StudyDescription}` 
-      : 'ANONYMIZED STUDY'
+    PatientSex: ''
   };
-});
-
-receiver.onServerStarted((err, event) => {
+  
+  return JSON.stringify(modified);
+});eiver.onServerStarted((err, event) => {
   if (err) {
     console.error('Server start error:', err);
     return;
@@ -1769,7 +1815,11 @@ If the callback throws an error or the Promise rejects:
 - Error is logged if `verbose: true`
 
 ```typescript
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Validation example
   if (!tags.PatientID) {
     throw new Error('PatientID is required');
@@ -1787,7 +1837,7 @@ receiver.onBeforeStore(async (tags) => {
     throw new Error('StudyDescription required for CT studies');
   }
   
-  return tags;
+  return JSON.stringify(tags);
 });
 ```
 
@@ -1817,7 +1867,11 @@ receiver.onBeforeStore(async (tags) => {
 
 **Example: Optimized async operations**
 ```typescript
-receiver.onBeforeStore(async (tags) => {
+receiver.onBeforeStore(async (error, tagsJson) => {
+  if (error) throw error;
+  
+  const tags = JSON.parse(tagsJson);
+  
   // Parallel async operations
   const [anonId, metadata, isAuthorized] = await Promise.all([
     db.getAnonymousId(tags.PatientID),
@@ -1829,11 +1883,13 @@ receiver.onBeforeStore(async (tags) => {
     throw new Error('Unauthorized patient access');
   }
   
-  return {
+  const modified = {
     ...tags,
     PatientID: anonId,
     InstitutionName: metadata.institution
   };
+  
+  return JSON.stringify(modified);
 });
 ```
 

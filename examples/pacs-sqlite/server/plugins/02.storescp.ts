@@ -95,52 +95,83 @@ export default defineNitroPlugin(async (nitroApp) => {
     studyTimeout: 30
   });
   
-  // Anonymize before storing
-  storeScp.onBeforeStore((err: Error | null, tags: Record<string, string>) => {
-    if (err) {
-      console.error('[StoreSCP] onBeforeStore error:', err);
-      return {};
+  // Anonymize before storing (async callback with database mapping)
+  storeScp.onBeforeStore(async (error: Error | null, tagsJson: string) => {
+    // Check for errors first (error-first callback pattern)
+    if (error) {
+      console.error('[StoreSCP] Callback error:', error);
+      throw error;
     }
     
     try {
-      // Debug: Log what we actually received
-      console.log('[StoreSCP] onBeforeStore called with:', {
-        type: typeof tags,
-        isNull: tags === null,
-        isUndefined: tags === undefined,
-        keys: tags ? Object.keys(tags) : 'N/A',
-        length: tags ? Object.keys(tags).length : 'N/A',
-        value: tags
-      });
+      // Parse JSON string to object
+      const tags = JSON.parse(tagsJson);
+      console.log('[StoreSCP] Processing tags:', Object.keys(tags).length, 'tags received');
       
-      // Validate tags object
-      if (!tags || typeof tags !== 'object' || Object.keys(tags).length === 0) {
-        console.warn('[StoreSCP] Invalid or empty tags, returning empty object');
-        return {}; // Return empty object, not null
+      // Extract original patient data
+      const originalPatientID: string = tags.PatientID || 'UNKNOWN';
+      const originalPatientName: string = tags.PatientName || '';
+      
+      // Look up existing mapping in database
+      const db = useDatabase();
+      
+      // Generate fake data first (deterministic based on patient ID)
+      const fakeData = generateFakePatientData(originalPatientID);
+      
+      // Use INSERT OR IGNORE to handle race conditions when multiple files
+      // with same patient arrive simultaneously
+      await db.sql`
+        INSERT OR IGNORE INTO patient_mapping (
+          original_patient_id, original_patient_name,
+          anonymized_patient_id, anonymized_patient_name,
+          anonymized_birth_date, anonymized_sex
+        ) VALUES (
+          ${originalPatientID}, ${originalPatientName},
+          ${fakeData.patientID}, ${fakeData.patientName},
+          ${fakeData.patientBirthDate}, ${fakeData.patientSex}
+        )
+      `;
+      
+      // Fetch the mapping (either just inserted or existing)
+      const result = await db.sql`
+        SELECT * FROM patient_mapping WHERE original_patient_id = ${originalPatientID}
+      `;
+      
+      // Database wrapper returns { rows: [...], success: true }
+      const mappingRows = result.rows;
+      
+      if (!mappingRows || mappingRows.length === 0) {
+        console.error('[StoreSCP] Failed to fetch mapping after insert for:', originalPatientID);
+        throw new Error('Mapping not found after insert');
       }
       
-      // Log received tag keys
-      console.log('[StoreSCP] onBeforeStore received', Object.keys(tags).length, 'tags');
+      const mapping = mappingRows[0];
       
-      // Extract original patient ID
-      const originalPatientID: string = tags.PatientID || 'UNKNOWN';
-      
-      // Generate consistent fake data
-      const fakeData: FakePatientData = generateFakePatientData(originalPatientID);
-      
-      console.log(`[StoreSCP] ✓ Anonymized: ${originalPatientID} → ${fakeData.patientID}`);
-      
-      // Return modified tags
-      return {
-        ...tags,
-        PatientName: fakeData.patientName,
-        PatientID: fakeData.patientID,
-        PatientBirthDate: fakeData.patientBirthDate,
-        PatientSex: fakeData.patientSex
+      // Use the mapping from database (ensures consistency even if INSERT was ignored)
+      const finalFakeData: FakePatientData = {
+        patientName: mapping.anonymized_patient_name as string,
+        patientID: mapping.anonymized_patient_id as string,
+        patientBirthDate: mapping.anonymized_birth_date as string,
+        patientSex: mapping.anonymized_sex as string
       };
+      
+      console.log(`[StoreSCP] ✓ Mapped: ${originalPatientID} → ${finalFakeData.patientID}`);
+      
+      // Return ONLY the modified tags (not all tags)
+      // This prevents corruption of pixel data and other technical tags
+      const modified = {
+        PatientName: finalFakeData.patientName,
+        PatientID: finalFakeData.patientID,
+        PatientBirthDate: finalFakeData.patientBirthDate,
+        PatientSex: finalFakeData.patientSex
+      };
+      
+      return JSON.stringify(modified);
     } catch (error: any) {
       console.error('[StoreSCP] Anonymization error:', error.message);
-      return tags; // Return original tags on error
+      console.error('[StoreSCP] Stack:', error.stack);
+      // Return original tags to allow storage
+      return tagsJson;
     }
   });
   

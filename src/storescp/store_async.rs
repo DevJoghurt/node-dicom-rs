@@ -20,7 +20,7 @@ use tracing::{debug, info, warn, error};
 use serde::Serialize;
 use async_trait::async_trait;
 
-use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, StoreScp, ScpEventDetails, StudyHierarchyData, SeriesHierarchyData, InstanceHierarchyData};
+use crate::storescp::{create_cecho_response, create_cstore_response, transfer::ABSTRACT_SYNTAXES, ScpEventDetails, StudyHierarchyData, SeriesHierarchyData, InstanceHierarchyData};
 use crate::utils::{build_s3_bucket, s3_put_object, CustomTag};
 use crate::utils::dicom_tags::{parse_tag, get_tag_scope, TagScope};
 
@@ -144,30 +144,27 @@ enum HierarchyLevel {
 
 pub async fn run_store_async(
     scu_stream: tokio::net::TcpStream,
-    args: &StoreScp,
+    args: &crate::storescp::StoreScp,
     on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
     on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever> {
-    let StoreScp {
-        verbose,
-        calling_ae_title,
-        strict,
-        max_pdu_length,
-        out_dir,
-        port: _,
-        study_timeout,
-        storage_backend,
-        s3_config,
-        store_with_file_meta,
-        extract_tags,
-        extract_custom_tags,
-        abstract_syntax_mode,
-        abstract_syntaxes,
-        transfer_syntax_mode,
-        transfer_syntaxes,
-        on_before_store,
-        shutdown_tx: _,
-    } = args;
+    // Access fields directly instead of destructuring due to #[napi] wrapper
+    let verbose = &args.verbose;
+    let calling_ae_title = &args.calling_ae_title;
+    let strict = &args.strict;
+    let max_pdu_length = &args.max_pdu_length;
+    let out_dir = &args.out_dir;
+    let study_timeout = &args.study_timeout;
+    let storage_backend = &args.storage_backend;
+    let s3_config = &args.s3_config;
+    let store_with_file_meta = &args.store_with_file_meta;
+    let extract_tags = &args.extract_tags;
+    let extract_custom_tags = &args.extract_custom_tags;
+    let abstract_syntax_mode = &args.abstract_syntax_mode;
+    let abstract_syntaxes = &args.abstract_syntaxes;
+    let transfer_syntax_mode = &args.transfer_syntax_mode;
+    let transfer_syntaxes = &args.transfer_syntaxes;
+    let on_before_store = &args.on_before_store;
 
     let mut options = dicom_ul::association::ServerAssociationOptions::new()
         .accept_any()
@@ -191,7 +188,7 @@ pub async fn run_store_async(
             // Use user-provided list
             use crate::storescp::sop_classes::map_sop_class_name;
             for name_or_uid in abstract_syntaxes {
-                let uid = map_sop_class_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                let uid = map_sop_class_name(name_or_uid).unwrap_or(&name_or_uid);
                 options = options.with_abstract_syntax(uid);
             }
         }
@@ -215,7 +212,7 @@ pub async fn run_store_async(
             // Use user-provided list
             use crate::storescp::sop_classes::map_transfer_syntax_name;
             for name_or_uid in transfer_syntaxes {
-                let uid = map_transfer_syntax_name(name_or_uid).unwrap_or(name_or_uid.as_str());
+                let uid = map_transfer_syntax_name(name_or_uid).unwrap_or(&name_or_uid);
                 options = options.with_transfer_syntax(uid);
             }
         }
@@ -283,10 +280,10 @@ async fn inner(
     storage_backend: &crate::storescp::StorageBackendType,
     s3_config: &Option<crate::storescp::S3Config>,
     store_with_file_meta: bool,
-    args: &StoreScp,
+    args: &crate::storescp::StoreScp,
     extract_tags: &[String],
     extract_custom_tags: &[CustomTag],
-    on_before_store: &Option<Arc<napi::threadsafe_function::ThreadsafeFunction<std::collections::HashMap<String, String>, std::collections::HashMap<String, String>>>>,
+    on_before_store: &Option<Arc<napi::threadsafe_function::ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>>,
     on_file_stored: impl Fn(ScpEventDetails) + Send + 'static,
     on_study_completed: Arc<Mutex<dyn Fn(StudyHierarchyData) + Send + 'static>>
 ) -> Result<(), Whatever>
@@ -470,32 +467,83 @@ async fn inner(
                                         
                                         use dicom_core::{dicom_value, DataElement, VR};
                                         
-                                        // Call async JS callback - it receives tags and returns a Promise<modified_tags>
-                                        // call_async is itself async and waits for the Promise to resolve
-                                        match callback_arc.call_async(Ok(extracted_tags.clone())).await {
-                                            Ok(modified_tags) if !modified_tags.is_empty() => {
-                                                info!("Successfully received {} modified tags from Promise", modified_tags.len());
-                                                // Update the DICOM object with modified tags
-                                                for (tag_name, new_value) in &modified_tags {
-                                                    if let Ok(tag) = crate::utils::parse_tag(tag_name) {
-                                                        // Get VR from existing element or default to LO
-                                                        let vr = obj_to_save.element(tag)
-                                                            .map(|e| e.vr())
-                                                            .unwrap_or(VR::LO);
-                                                        
-                                                        // Create new element with updated value
-                                                        let new_element = DataElement::new(tag, vr, dicom_value!(Str, new_value.as_str()));
-                                                        obj_to_save.put(new_element);
+                                        // Serialize HashMap to JSON string (HashMap doesn't work directly in ThreadsafeFunction)
+                                        let tags_json = serde_json::to_string(&extracted_tags).unwrap_or_default();
+                                        
+                                        // Call async JS callback - returns Future<Promise<String>>
+                                        // First await gets the Promise, second await gets the JSON string
+                                        match callback_arc.call_async(Ok(tags_json)).await {
+                                            Ok(promise) => {
+                                                match promise.await {
+                                                    Ok(result_json) if !result_json.is_empty() => {
+                                                        // Parse JSON string back to HashMap
+                                                        match serde_json::from_str::<HashMap<String, String>>(&result_json) {
+                                                            Ok(modified_tags) if !modified_tags.is_empty() => {
+                                                                info!("Successfully received {} modified tags from Promise", modified_tags.len());
+                                                                // Update the DICOM object with modified tags
+                                                                // Only update if value actually changed to preserve original encoding
+                                                                for (tag_name, new_value) in &modified_tags {
+                                                                    if let Ok(tag) = crate::utils::parse_tag(tag_name) {
+                                                                        // Get current value to check if it changed
+                                                                        let current_value = obj_to_save.element(tag)
+                                                                            .ok()
+                                                                            .and_then(|e| e.to_str().ok())
+                                                                            .map(|s| s.to_string())
+                                                                            .unwrap_or_default();
+                                                                        
+                                                                        // Only update if value actually changed
+                                                                        if current_value != *new_value {
+                                                                            // Get VR from existing element or use PN for patient name, LO for others
+                                                                            let vr = obj_to_save.element(tag)
+                                                                                .map(|e| e.vr())
+                                                                                .unwrap_or_else(|_| {
+                                                                                    // Use appropriate VR for common patient tags
+                                                                                    if tag == tags::PATIENT_NAME {
+                                                                                        VR::PN
+                                                                                    } else if tag == tags::PATIENT_ID {
+                                                                                        VR::LO
+                                                                                    } else if tag == tags::PATIENT_BIRTH_DATE {
+                                                                                        VR::DA
+                                                                                    } else if tag == tags::PATIENT_SEX {
+                                                                                        VR::CS
+                                                                                    } else {
+                                                                                        VR::LO
+                                                                                    }
+                                                                                });
+                                                                            
+                                                                            // Create new element with updated value
+                                                                            let new_element = DataElement::new(tag, vr, dicom_value!(Str, new_value.as_str()));
+                                                                            obj_to_save.put(new_element);
+                                                                            info!("Updated tag {} from '{}' to '{}'", tag_name, current_value, new_value);
+                                                                        }
+                                                                    }
+                                                                }
+                                                                // Merge modified tags into the original tags for event emission
+                                                                // This preserves all extracted tags while updating the modified ones
+                                                                if let Some(ref mut original_tags) = tags {
+                                                                    for (key, value) in modified_tags {
+                                                                        original_tags.insert(key, value);
+                                                                    }
+                                                                }
+                                                            }
+                                                            Ok(_) => {
+                                                                warn!("Received empty modified tags from Promise");
+                                                            }
+                                                            Err(parse_err) => {
+                                                                error!("Failed to parse JSON from Promise: {:?}", parse_err);
+                                                            }
+                                                        }
+                                                    }
+                                                    Ok(_) => {
+                                                        warn!("Promise resolved but returned empty JSON");
+                                                    }
+                                                    Err(promise_err) => {
+                                                        error!("Promise rejected: {:?}", promise_err);
                                                     }
                                                 }
-                                                // Update tags for event emission
-                                                tags = Some(modified_tags);
-                                            }
-                                            Ok(_) => {
-                                                warn!("Promise resolved but returned empty tags");
                                             }
                                             Err(e) => {
-                                                error!("Promise rejected or callback failed: {:?}", e);
+                                                error!("call_async failed: {:?}", e);
                                             }
                                         }
                                     } else {

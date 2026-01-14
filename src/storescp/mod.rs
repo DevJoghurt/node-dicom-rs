@@ -95,49 +95,50 @@ pub enum TransferSyntaxMode {
 pub struct StoreScp {
     /// Verbose mode
     // short = 'v', long = "verbose"
-    verbose: bool,
+    pub(crate) verbose: bool,
     /// Calling Application Entity title
     // long = "calling-ae-title", default_value = "STORE-SCP"
-    calling_ae_title: String,
+    pub(crate) calling_ae_title: String,
     /// Enforce max pdu length
     // short = 's', long = "strict"
-    strict: bool,
+    pub(crate) strict: bool,
     /// Maximum PDU length
     // short = 'm', long = "max-pdu-length", default_value = "16384"
-    max_pdu_length: u32,
+    pub(crate) max_pdu_length: u32,
     /// Which port to listen on
     // short, default_value = "11111"
-    port: u16,
+    pub(crate) port: u16,
     /// Study completion callback timeout
     /// Default is 30 seconds
-    study_timeout: u32,
+    pub(crate) study_timeout: u32,
     /// Storage backend type
     // long = "storage-backend", default_value = "Filesystem"
-    storage_backend: StorageBackendType,
+    pub(crate) storage_backend: StorageBackendType,
     /// S3 configuration if using S3 as storage backend
-    s3_config: Option<S3Config>,
+    pub(crate) s3_config: Option<S3Config>,
     /// Output directory for incoming objects using Filesystem storage backend
     // short = 'o', default_value = "."
-    out_dir: Option<String>,
+    pub(crate) out_dir: Option<String>,
     /// Store files with complete DICOM file meta header (true) or dataset-only (false)
     /// Default is false (dataset-only), which is more efficient and standard for PACS systems
-    store_with_file_meta: bool,
+    pub(crate) store_with_file_meta: bool,
     /// DICOM tags to extract (by name or hex)
-    extract_tags: Vec<String>,
+    pub(crate) extract_tags: Vec<String>,
     /// Custom DICOM tags to extract (with user-defined names)
-    extract_custom_tags: Vec<CustomTag>,
+    pub(crate) extract_custom_tags: Vec<CustomTag>,
     /// Abstract syntax acceptance mode
-    abstract_syntax_mode: AbstractSyntaxMode,
+    pub(crate) abstract_syntax_mode: AbstractSyntaxMode,
     /// Custom abstract syntaxes (SOP Class UIDs)
-    abstract_syntaxes: Vec<String>,
+    pub(crate) abstract_syntaxes: Vec<String>,
     /// Transfer syntax acceptance mode
-    transfer_syntax_mode: TransferSyntaxMode,
+    pub(crate) transfer_syntax_mode: TransferSyntaxMode,
     /// Custom transfer syntaxes
-    transfer_syntaxes: Vec<String>,
+    pub(crate) transfer_syntaxes: Vec<String>,
     /// Callback for modifying tags before storage (async, returns Promise)
-    on_before_store: Option<Arc<ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>>>,
+    /// Tags are passed as JSON string due to NAPI-RS ThreadsafeFunction limitations with HashMap
+    pub(crate) on_before_store: Option<Arc<ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>>>,
     /// Shutdown channel for graceful shutdown
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 
@@ -228,6 +229,15 @@ pub struct StudyHierarchyData {
     /// Patient + Study level tags only
     pub tags: Option<HashMap<String, String>>,
     pub series: Vec<SeriesHierarchyData>,
+}
+
+/// Tags wrapper for onBeforeStore callback
+/// This wrapper is needed because ThreadsafeFunction doesn't directly support HashMap
+/// Using Vec instead of HashMap for better serialization support
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct BeforeStoreArgs {
+    pub tags: Vec<(String, String)>,
 }
 
 /// Series data within a study
@@ -810,15 +820,16 @@ impl StoreScp {
      * Register a callback to modify DICOM tags before files are saved.
      * 
      * This callback is invoked **asynchronously** for each received DICOM file, allowing you
-     * to modify tags before the file is written to disk. The callback receives the extracted
-     * tags as a plain object and must return a Promise that resolves to modified tags.
+     * to modify tags before the file is written to disk. The callback receives an error parameter
+     * (always null unless there's an internal error) and the extracted tags as a JSON string.
      * 
      * **Important:** 
      * - You must configure `extractTags` to specify which tags should be extracted
      * - Only tags specified in `extractTags` will be available to modify
-     * - The callback is async and must return a Promise<Record<string, string>>
-     * - Tags are passed and returned as `Record<string, string>` (key-value pairs)
-     * - Must call this method BEFORE `listen()`
+     * - The callback follows error-first pattern: `(err, tagsJson) => Promise<string>`
+     * - Tags are passed as JSON string, must be parsed with JSON.parse()
+     * - Must return a Promise that resolves to a JSON string (use JSON.stringify())
+     * - Must call this method BEFORE `start()`
      * - File storage waits for the Promise to resolve before saving
      * 
      * **Common Use Cases:**
@@ -827,7 +838,7 @@ impl StoreScp {
      * - **Validation**: Verify required tags are present (throw error to reject file)
      * - **Normalization**: Standardize tag formats across different sources
      * 
-     * @param callback - Async function that receives tags and returns a Promise of modified tags
+     * @param callback - Error-first async function that receives tags JSON and returns Promise of modified tags JSON
      * 
      * @example
      * ```typescript
@@ -839,11 +850,15 @@ impl StoreScp {
      *   extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
      * });
      * 
-     * scp.onBeforeStore(async (tags) => {
+     * scp.onBeforeStore(async (error, tagsJson) => {
+     *   if (error) throw error;
+     *   
+     *   const tags = JSON.parse(tagsJson);
+     *   
      *   // Async database lookup for anonymous ID
      *   const anonId = await db.getOrCreateAnonId(tags.PatientID);
      *   
-     *   return {
+     *   const modified = {
      *     ...tags,
      *     PatientName: 'ANONYMOUS^PATIENT',
      *     PatientID: anonId,
@@ -852,15 +867,21 @@ impl StoreScp {
      *       ? `ANONYMIZED - ${tags.StudyDescription}` 
      *       : 'ANONYMIZED STUDY'
      *   };
+     *   
+     *   return JSON.stringify(modified);
      * });
      * 
-     * await scp.listen();
+     * scp.start();
      * ```
      * 
      * @example
      * ```typescript
      * // Async validation with external service
-     * scp.onBeforeStore(async (tags) => {
+     * scp.onBeforeStore(async (error, tagsJson) => {
+     *   if (error) throw error;
+     *   
+     *   const tags = JSON.parse(tagsJson);
+     *   
      *   if (!tags.PatientID || !tags.StudyInstanceUID) {
      *     throw new Error('Missing required patient or study identifiers');
      *   }
@@ -871,28 +892,34 @@ impl StoreScp {
      *     throw new Error('Invalid PatientID - not found in registry');
      *   }
      *   
-     *   return tags; // No modifications, just validation
+     *   return JSON.stringify(tags); // No modifications, just validation
      * });
      * ```
      * 
      * @example
      * ```typescript
      * // Async tag enrichment with API call
-     * scp.onBeforeStore(async (tags) => {
+     * scp.onBeforeStore(async (error, tagsJson) => {
+     *   if (error) throw error;
+     *   
+     *   const tags = JSON.parse(tagsJson);
+     *   
      *   // Fetch additional metadata from external API
      *   const metadata = await fetchPatientMetadata(tags.PatientID);
      *   
-     *   return {
+     *   const modified = {
      *     ...tags,
      *     PatientName: tags.PatientName?.toUpperCase() || '',
      *     PatientSex: metadata.sex || 'O',
      *     InstitutionName: metadata.institution || 'UNKNOWN'
      *   };
+     *   
+     *   return JSON.stringify(modified);
      * });
      * ```
      */
-    #[napi(ts_args_type = "callback: (tags: Record<string, string>) => Promise<Record<string, string>>")]
-    pub fn on_before_store(&mut self, callback: ThreadsafeFunction<HashMap<String, String>, HashMap<String, String>>) {
+    #[napi(ts_args_type = "callback: (err: Error | null, tagsJson: string) => Promise<string>")]
+    pub fn on_before_store(&mut self, callback: ThreadsafeFunction<String, napi::bindgen_prelude::Promise<String>>) {
         self.on_before_store = Some(Arc::new(callback));
     }
 

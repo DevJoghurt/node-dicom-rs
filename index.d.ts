@@ -803,15 +803,16 @@ export declare class StoreScp {
   /** * Register a callback to modify DICOM tags before files are saved.
    *
    * This callback is invoked **asynchronously** for each received DICOM file, allowing you
-   * to modify tags before the file is written to disk. The callback receives the extracted
-   * tags as a plain object and must return a Promise that resolves to modified tags.
+   * to modify tags before the file is written to disk. The callback receives an error parameter
+   * (always null unless there's an internal error) and the extracted tags as a JSON string.
    *
    * **Important:**
    * - You must configure `extractTags` to specify which tags should be extracted
    * - Only tags specified in `extractTags` will be available to modify
-   * - The callback is async and must return a Promise<Record<string, string>>
-   * - Tags are passed and returned as `Record<string, string>` (key-value pairs)
-   * - Must call this method BEFORE `listen()`
+   * - The callback follows error-first pattern: `(err, tagsJson) => Promise<string>`
+   * - Tags are passed as JSON string, must be parsed with JSON.parse()
+   * - Must return a Promise that resolves to a JSON string (use JSON.stringify())
+   * - Must call this method BEFORE `start()`
    * - File storage waits for the Promise to resolve before saving
    *
    * **Common Use Cases:**
@@ -820,7 +821,7 @@ export declare class StoreScp {
    * - **Validation**: Verify required tags are present (throw error to reject file)
    * - **Normalization**: Standardize tag formats across different sources
    *
-   * @param callback - Async function that receives tags and returns a Promise of modified tags
+   * @param callback - Error-first async function that receives tags JSON and returns Promise of modified tags JSON
    *
    * @example
    * ```typescript
@@ -832,11 +833,15 @@ export declare class StoreScp {
    *   extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
    * });
    *
-   * scp.onBeforeStore(async (tags) => {
+   * scp.onBeforeStore(async (error, tagsJson) => {
+   *   if (error) throw error;
+   *
+   *   const tags = JSON.parse(tagsJson);
+   *
    *   // Async database lookup for anonymous ID
    *   const anonId = await db.getOrCreateAnonId(tags.PatientID);
    *
-   *   return {
+   *   const modified = {
    *     ...tags,
    *     PatientName: 'ANONYMOUS^PATIENT',
    *     PatientID: anonId,
@@ -845,15 +850,21 @@ export declare class StoreScp {
    *       ? `ANONYMIZED - ${tags.StudyDescription}`
    *       : 'ANONYMIZED STUDY'
    *   };
+   *
+   *   return JSON.stringify(modified);
    * });
    *
-   * await scp.listen();
+   * scp.start();
    * ```
    *
    * @example
    * ```typescript
    * // Async validation with external service
-   * scp.onBeforeStore(async (tags) => {
+   * scp.onBeforeStore(async (error, tagsJson) => {
+   *   if (error) throw error;
+   *
+   *   const tags = JSON.parse(tagsJson);
+   *
    *   if (!tags.PatientID || !tags.StudyInstanceUID) {
    *     throw new Error('Missing required patient or study identifiers');
    *   }
@@ -864,27 +875,33 @@ export declare class StoreScp {
    *     throw new Error('Invalid PatientID - not found in registry');
    *   }
    *
-   *   return tags; // No modifications, just validation
+   *   return JSON.stringify(tags); // No modifications, just validation
    * });
    * ```
    *
    * @example
    * ```typescript
    * // Async tag enrichment with API call
-   * scp.onBeforeStore(async (tags) => {
+   * scp.onBeforeStore(async (error, tagsJson) => {
+   *   if (error) throw error;
+   *
+   *   const tags = JSON.parse(tagsJson);
+   *
    *   // Fetch additional metadata from external API
    *   const metadata = await fetchPatientMetadata(tags.PatientID);
    *
-   *   return {
+   *   const modified = {
    *     ...tags,
    *     PatientName: tags.PatientName?.toUpperCase() || '',
    *     PatientSex: metadata.sex || 'O',
    *     InstitutionName: metadata.institution || 'UNKNOWN'
    *   };
+   *
+   *   return JSON.stringify(modified);
    * });
    * ```
    */
-  onBeforeStore(callback: (tags: Record<string, string>) => Promise<Record<string, string>>): void
+  onBeforeStore(callback: (err: Error | null, tagsJson: string) => Promise<string>): void
 }
 
 /** * DICOM C-STORE SCU (Service Class User) Client.
@@ -1201,6 +1218,15 @@ export declare const enum AbstractSyntaxMode {
   All = 'All',
   /** Accept only specified SOP classes */
   Custom = 'Custom'
+}
+
+/**
+ * Tags wrapper for onBeforeStore callback
+ * This wrapper is needed because ThreadsafeFunction doesn't directly support HashMap
+ * Using Vec instead of HashMap for better serialization support
+ */
+export interface BeforeStoreArgs {
+  tags: Array<[string, string]>
 }
 
 /** * Combine multiple tag arrays into a single deduplicated array.

@@ -263,7 +263,7 @@ receiver.onStudyCompleted((err, event) => {
 
 ### Tag Modification Before Storage 🆕
 
-Modify DICOM tags synchronously before files are saved using the `onBeforeStore` callback:
+Modify DICOM tags asynchronously before files are saved using the `onBeforeStore` callback:
 
 ```typescript
 const receiver = new StoreScp({
@@ -272,33 +272,43 @@ const receiver = new StoreScp({
     extractTags: ['PatientName', 'PatientID', 'PatientBirthDate', 'StudyDescription']
 });
 
-// Anonymize incoming files before storage
-receiver.onBeforeStore((tags) => {
-    // Return modified tags - these will be written to the file
-    return {
+// Anonymize incoming files before storage (with async database lookup)
+receiver.onBeforeStore(async (error, tagsJson) => {
+    if (error) throw error;
+    
+    const tags = JSON.parse(tagsJson);
+    
+    // Async database lookup for persistent anonymization
+    const anonId = await db.getOrCreateAnonId(tags.PatientID);
+    
+    const modified = {
         ...tags,
         PatientName: 'ANONYMOUS',
-        PatientID: `ANON_${Math.random().toString(36).substr(2, 9)}`,
+        PatientID: anonId,
         PatientBirthDate: '', // Remove PHI
         StudyDescription: tags.StudyDescription ? 
             `ANONYMIZED - ${tags.StudyDescription}` : 
             'ANONYMIZED STUDY'
     };
+    
+    return JSON.stringify(modified);
 });
 
 receiver.start();
 ```
 
 **Key Features:**
-- **Synchronous**: Blocks file storage until callback returns
+- **Asynchronous**: Supports async/await for database operations and API calls
+- **Error-First Pattern**: Callback receives `(error, tagsJson)` parameters
 - **Pre-Storage**: Modifications applied BEFORE writing to disk
 - **Tag-Safe**: Only modifies extracted tags (specified in `extractTags`)
+- **JSON Format**: Tags passed as JSON string, must parse and stringify
 - **Flexible**: Use for anonymization, validation, enrichment, or standardization
 
 **Use Cases:**
-- Real-time anonymization for research databases
-- Adding institution-specific metadata
-- Tag validation and quality control
+- Real-time anonymization with persistent database mappings
+- Adding institution-specific metadata from external APIs
+- Tag validation against external services
 - Format standardization
 - PHI removal for GDPR/HIPAA compliance
 

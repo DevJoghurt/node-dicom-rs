@@ -12,6 +12,9 @@ Complete production-ready PACS (Picture Archiving and Communication System) impl
 ## Quick Start
 
 ```bash
+# 0. Go to examples folder
+cd ./examples/pacs-sqlite
+
 # 1. Install dependencies
 npm install
 
@@ -19,10 +22,9 @@ npm install
 npm run dev
 
 # 3. In another terminal, send test files
-cd ../../playground
-./downloadTestData.sh  # If not already downloaded
-cd ../examples/pacs-sqlite
-node scripts/send-test-files.mjs ../../playground/testdata
+cd ./examples/pacs-sqlite
+./scripts/downloadTestData.sh  # If not already downloaded
+node scripts/send-test-files.mjs ./testdata
 
 # 4. Open browser
 open http://localhost:3000

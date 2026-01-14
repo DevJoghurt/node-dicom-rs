@@ -67,6 +67,19 @@ export default defineNitroPlugin(async (nitroApp) => {
     )
   `);
   
+  // Create patient mapping table for anonymization
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS patient_mapping (
+      original_patient_id TEXT PRIMARY KEY,
+      original_patient_name TEXT,
+      anonymized_patient_id TEXT NOT NULL,
+      anonymized_patient_name TEXT NOT NULL,
+      anonymized_birth_date TEXT NOT NULL,
+      anonymized_sex TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  
   // Create indexes for fast queries
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_studies_patient_id ON studies(patient_id);
