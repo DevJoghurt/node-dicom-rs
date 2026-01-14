@@ -1177,9 +1177,6 @@ import { getAvailableTagNames } from '@nuxthealth/node-dicom';
 console.log(getAvailableTagNames());
 ```
 
-console.log(getAvailableTagNames());
-```
-
 ## Helper Functions
 
 node-dicom-rs provides helper functions to simplify common configuration tasks.
@@ -1603,6 +1600,7 @@ receiver.onBeforeStore(async (error, tagsJson) => {
   
   return JSON.stringify(modified);
 });
+```
 
 ##### 2. Validation
 
