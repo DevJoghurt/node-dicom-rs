@@ -73,11 +73,124 @@
 
           <!-- Info Overlay -->
           <div v-if="currentImageInfo && !viewerLoading" class="info-overlay">
-            <div><strong>Patient:</strong> {{ currentImageInfo.patientName }}</div>
-            <div><strong>Study Date:</strong> {{ currentImageInfo.studyDate }}</div>
-            <div><strong>Modality:</strong> {{ currentImageInfo.modality }}</div>
-            <div v-if="currentImageInfo.seriesNumber"><strong>Series:</strong> {{ currentImageInfo.seriesNumber }}</div>
-            <div v-if="currentImageInfo.instanceNumber"><strong>Instance:</strong> {{ currentImageInfo.instanceNumber }}</div>
+            <div class="info-header">
+              <strong>📍 Image {{ currentImageIndex + 1 }} / {{ totalImages }}</strong>
+            </div>
+            <div><strong>👤 Patient:</strong> {{ currentImageInfo.patientName }}</div>
+            <div><strong>📅 Study Date:</strong> {{ currentImageInfo.studyDate }}</div>
+            <div><strong>📊 Modality:</strong> {{ currentImageInfo.modality }}</div>
+            <div><strong>📋 Series #:</strong> {{ currentImageInfo.seriesNumber }}</div>
+            <div><strong>🔢 Instance #:</strong> {{ currentImageInfo.instanceNumber }}</div>
+            <div><strong>📏 Size:</strong> {{ currentImageInfo.columns }} × {{ currentImageInfo.rows }}</div>
+            <div class="info-uid"><strong>🆔 SOP:</strong> <code>{{ currentImageInfo.sopInstanceUid }}</code></div>
+          </div>
+
+          <!-- Debug Panel -->
+          <div v-if="debugInfo" class="debug-panel">
+            <button @click="showDebugPanel = !showDebugPanel" class="debug-toggle">
+              {{ showDebugPanel ? '▼' : '▶' }} Debug Info
+            </button>
+            
+            <div v-if="showDebugPanel" class="debug-content">
+              <div class="debug-section">
+                <h3>Instance Analysis</h3>
+                <div class="debug-row">
+                  <span>Total Instances:</span>
+                  <strong>{{ debugInfo.analysis.totalInstances }}</strong>
+                </div>
+                <div class="debug-row">
+                  <span>Instance Range:</span>
+                  <strong>{{ debugInfo.analysis.minInstanceNumber }} - {{ debugInfo.analysis.maxInstanceNumber }}</strong>
+                </div>
+                <div class="debug-row">
+                  <span>Expected Count:</span>
+                  <strong :class="{ 'text-danger': debugInfo.analysis.expectedCount !== debugInfo.analysis.totalInstances }">
+                    {{ debugInfo.analysis.expectedCount }}
+                  </strong>
+                </div>
+                
+                <div v-if="debugInfo.analysis.invalidNumbers.length > 0" class="debug-alert alert-warning">
+                  <strong>⚠️ Invalid Instance Numbers:</strong>
+                  <span>{{ debugInfo.analysis.invalidNumbers.length }} instances missing Instance Number tag</span>
+                </div>
+                
+                <div v-if="debugInfo.analysis.gaps.length > 0" class="debug-alert alert-warning">
+                  <strong>⚠️ Gaps Detected:</strong>
+                  <div v-for="(gap, idx) in debugInfo.analysis.gaps" :key="idx" style="margin-top: 5px; font-size: 11px;">
+                    Instance #{{ gap.from }} → #{{ gap.to }}: Missing {{ gap.missing.length }} instances
+                    <div style="color: #fca5a5;">{{ gap.missing.join(', ') }}</div>
+                  </div>
+                </div>
+                
+                <div v-if="debugInfo.analysis.duplicates.length > 0" class="debug-alert alert-danger">
+                  <strong>🚨 Duplicate Instance Numbers:</strong>
+                  <span>{{ debugInfo.analysis.duplicates.join(', ') }}</span>
+                </div>
+              </div>
+
+              <div class="debug-section">
+                <h3>Series Information</h3>
+                <div class="debug-row">
+                  <span>Study UID:</span>
+                  <code class="debug-code">{{ debugInfo.studyUID.substring(0, 30) }}...</code>
+                </div>
+                <div class="debug-row">
+                  <span>Series UID:</span>
+                  <code class="debug-code">{{ debugInfo.seriesUID.substring(0, 30) }}...</code>
+                </div>
+                <div class="debug-row">
+                  <span>Images Loaded:</span>
+                  <strong>{{ debugInfo.imageCount }}</strong>
+                </div>
+                <div class="debug-row">
+                  <span>Timestamp:</span>
+                  <code class="debug-code">{{ new Date(debugInfo.timestamp).toLocaleTimeString() }}</code>
+                </div>
+              </div>
+
+              <div class="debug-section">
+                <h3>Current Slice</h3>
+                <div class="debug-row">
+                  <span>Image Index:</span>
+                  <strong>{{ currentImageIndex }} / {{ totalImages - 1 }}</strong>
+                </div>
+                <div v-if="allInstanceMetadata[currentImageIndex]" class="debug-slice-info">
+                  <div class="debug-row">
+                    <span>Instance #:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00200013']?.Value?.[0] || 'N/A' }}</strong>
+                  </div>
+                  <div class="debug-row">
+                    <span>Rows × Columns:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00280010']?.Value?.[0] || '?' }} × {{ allInstanceMetadata[currentImageIndex]['00280011']?.Value?.[0] || '?' }}</strong>
+                  </div>
+                  <div class="debug-row">
+                    <span>Bits Allocated:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00280100']?.Value?.[0] || 'N/A' }}</strong>
+                  </div>
+                  <div class="debug-row">
+                    <span>Bits Stored:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00280101']?.Value?.[0] || 'N/A' }}</strong>
+                  </div>
+                  <div class="debug-row">
+                    <span>High Bit:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00280102']?.Value?.[0] || 'N/A' }}</strong>
+                  </div>
+                  <div class="debug-row">
+                    <span>Pixel Representation:</span>
+                    <strong>{{ allInstanceMetadata[currentImageIndex]['00280103']?.Value?.[0] || 'N/A' }}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div class="debug-section">
+                <h3>Instance Numbers</h3>
+                <div class="debug-instance-list">
+                  <span v-for="(num, idx) in debugInfo.analysis.instanceNumbers" :key="idx" class="debug-instance">
+                    {{ num }}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -86,6 +199,8 @@
 </template>
 
 <script setup>
+import { Enums } from '@cornerstonejs/core'
+
 // State
 const studies = ref([])
 const selectedStudy = ref(null)
@@ -96,16 +211,25 @@ const loadingMessage = ref('')
 const error = ref(null)
 const viewportElement = ref(null)
 const currentImageInfo = ref(null)
+const debugInfo = ref(null)
+const showDebugPanel = ref(true)
+const currentImageIndex = ref(0)
+const totalImages = ref(0)
+const allInstanceMetadata = ref([])
+
+// Store cleanup function for event listeners
+let cleanupEventListener = null
 
 // Composables
 const { init: initCornerstone, initialized } = useCornerstone()
-const { retrieveImageIds } = useDicomWeb()
+const { retrieveImageIds, fetchStudies, fetchSeries, fetchInstances } = useDicomWeb()
 const { create2DToolGroup, destroyToolGroup } = useCornerstoneTools()
-const { resizeViewport } = useCornerstoneViewport()
 const { 
+  resizeViewport,
   createRenderingEngine, 
   createStackViewport, 
-  destroyRenderingEngine 
+  destroyRenderingEngine,
+  setupViewportEventListener
 } = useCornerstoneViewport()
 
 // Constants
@@ -139,6 +263,9 @@ onMounted(async () => {
 
 // Cleanup on unmount
 onBeforeUnmount(() => {
+  if (cleanupEventListener) {
+    cleanupEventListener()
+  }
   destroyRenderingEngine()
   destroyToolGroup(TOOL_GROUP_ID)
 })
@@ -149,7 +276,6 @@ async function loadStudies() {
   error.value = null
   
   try {
-    const { fetchStudies } = useDicomWeb()
     studies.value = await fetchStudies()
     console.log(`Loaded ${studies.value.length} studies`)
   } catch (err) {
@@ -201,7 +327,6 @@ async function loadStudyImages(study) {
     
     // Fetch series for the study
     loadingMessage.value = 'Fetching series...'
-    const { fetchSeries, fetchInstances } = useDicomWeb()
     const series = await fetchSeries(studyUID)
     
     if (!series || series.length === 0) {
@@ -234,7 +359,28 @@ async function loadStudyImages(study) {
     
     // Load image IDs
     loadingMessage.value = 'Loading DICOM images...'
-    const imageIds = await retrieveImageIds(studyUID, seriesUID)
+    const result = await retrieveImageIds(studyUID, seriesUID)
+    const { imageIds, analysis } = result
+    
+    // Store all instance metadata for live updates
+    const allInstances = await fetchInstances(studyUID, seriesUID)
+    allInstances.sort((a, b) => {
+      const aNum = parseInt(a['00200013']?.Value?.[0] || '0')
+      const bNum = parseInt(b['00200013']?.Value?.[0] || '0')
+      return aNum - bNum
+    })
+    allInstanceMetadata.value = allInstances
+    totalImages.value = imageIds.length
+    
+    // Store debug info
+    debugInfo.value = {
+      timestamp: new Date().toISOString(),
+      studyUID,
+      seriesUID,
+      analysis,
+      imageCount: imageIds.length,
+    }
+    console.log('[loadStudyImages] Debug info:', debugInfo.value)
     
     // Create tool group
     const toolGroup = create2DToolGroup(TOOL_GROUP_ID)
@@ -248,6 +394,27 @@ async function loadStudyImages(study) {
       imageIds,
       TOOL_GROUP_ID
     )
+    
+    // Set up viewport event listeners for live updates
+    // Clean up previous listener if it exists
+    if (cleanupEventListener) {
+      cleanupEventListener()
+    }
+    
+    cleanupEventListener = setupViewportEventListener(
+      viewportElement.value,
+      Enums.Events.STACK_NEW_IMAGE,
+      (event) => {
+        const imageIndex = event.detail.imageIdIndex
+        if (imageIndex !== undefined) {
+          updateCurrentImageInfo(imageIndex)
+        }
+      },
+      { debug: true }
+    )
+    
+    // Initial image info
+    updateCurrentImageInfo(0)
     
     viewerLoading.value = false
     console.log('✓ Study loaded successfully')
@@ -272,6 +439,25 @@ function formatDate(dateStr) {
   const month = dateStr.substring(4, 6)
   const day = dateStr.substring(6, 8)
   return `${year}-${month}-${day}`
+}
+
+// Update image info based on current slice
+function updateCurrentImageInfo(imageIndex) {
+  currentImageIndex.value = imageIndex
+  
+  if (allInstanceMetadata.value[imageIndex]) {
+    const metadata = allInstanceMetadata.value[imageIndex]
+    currentImageInfo.value = {
+      patientName: getPatientName(selectedStudy.value),
+      studyDate: formatDate(selectedStudy.value['00080020']?.Value?.[0]),
+      modality: metadata['00080060']?.Value?.[0] || 'N/A',
+      seriesNumber: metadata['00200011']?.Value?.[0] || 'N/A',
+      instanceNumber: metadata['00200013']?.Value?.[0] || 'N/A',
+      sopInstanceUid: metadata['00080018']?.Value?.[0]?.substring(0, 40) + '...' || 'N/A',
+      rows: metadata['00280010']?.Value?.[0] || 'N/A',
+      columns: metadata['00280011']?.Value?.[0] || 'N/A',
+    }
+  }
 }
 </script>
 
@@ -508,5 +694,179 @@ function formatDate(dateStr) {
 .info-overlay strong {
   color: #3b82f6;
   margin-right: 4px;
+}
+
+.info-header {
+  background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+  margin: -12px -16px 8px -16px;
+  padding: 8px 16px;
+  border-radius: 8px 8px 0 0;
+  border-bottom: 1px solid #334155;
+  font-weight: 600;
+}
+
+.info-header strong {
+  color: #3b82f6;
+}
+
+.info-uid {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #334155;
+  font-size: 10px;
+}
+
+.info-uid code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 4px;
+  border-radius: 2px;
+  color: #22c55e;
+  font-family: 'Monaco', monospace;
+}
+
+.debug-panel {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  background: rgba(15, 23, 42, 0.98);
+  backdrop-filter: blur(10px);
+  border: 1px solid #334155;
+  border-radius: 8px;
+  max-width: 380px;
+  max-height: 60vh;
+  overflow: hidden;
+  z-index: 1000;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.debug-toggle {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+  color: #e2e8f0;
+  border: none;
+  border-radius: 8px 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+}
+
+.debug-toggle:hover {
+  background: linear-gradient(135deg, #1e40af 0%, #1e3a8a 100%);
+}
+
+.debug-content {
+  padding: 12px;
+  overflow-y: auto;
+  max-height: calc(60vh - 44px);
+  font-size: 11px;
+}
+
+.debug-section {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #334155;
+}
+
+.debug-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.debug-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #3b82f6;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  color: #cbd5e1;
+}
+
+.debug-row span {
+  color: #94a3b8;
+  flex: 0 0 auto;
+}
+
+.debug-row strong {
+  color: #f1f5f9;
+  text-align: right;
+  flex: 1;
+  margin-left: 8px;
+}
+
+.debug-row .text-danger {
+  color: #ef4444;
+}
+
+.debug-code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #22c55e;
+  font-family: 'Monaco', 'Courier New', monospace;
+  word-break: break-all;
+  text-align: right;
+  flex: 1;
+  margin-left: 8px;
+  display: block;
+}
+
+.debug-alert {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 4px;
+  border-left: 3px solid;
+  font-size: 10px;
+}
+
+.alert-warning {
+  background: rgba(217, 119, 6, 0.1);
+  border-left-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.alert-danger {
+  background: rgba(220, 38, 38, 0.1);
+  border-left-color: #ef4444;
+  color: #fca5a5;
+}
+
+.debug-alert strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.debug-instance-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.debug-instance {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid #3b82f6;
+  border-radius: 3px;
+  padding: 2px 6px;
+  color: #3b82f6;
+  font-weight: 500;
+  font-family: 'Monaco', monospace;
+}
+
+.debug-slice-info {
+  background: rgba(59, 130, 246, 0.05);
+  padding: 6px;
+  border-radius: 4px;
+  border-left: 2px solid #3b82f6;
 }
 </style>

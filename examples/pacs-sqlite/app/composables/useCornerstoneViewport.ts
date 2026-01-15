@@ -77,10 +77,49 @@ export const useCornerstoneViewport = () => {
     }
   }
   
+  const setupViewportEventListener = <T = any>(
+    element: HTMLDivElement,
+    eventType: Enums.Events,
+    callback: (event: CustomEvent<T>) => void,
+    options?: { debug?: boolean }
+  ) => {
+    const debug = options?.debug ?? false
+    
+    if (debug) {
+      console.log(`[setupViewportEventListener] Setting up listener for event: ${eventType}`)
+    }
+    
+    // Create typed event listener
+    const listener = (evt: Event) => {
+      const customEvent = evt as CustomEvent<T>
+      
+      if (debug) {
+        console.log(`[${eventType}] Event fired:`, customEvent.detail)
+      }
+      
+      callback(customEvent)
+    }
+    
+    element.addEventListener(eventType, listener)
+    
+    if (debug) {
+      console.log(`[setupViewportEventListener] Listener setup complete for ${eventType}`)
+    }
+    
+    // Return cleanup function
+    return () => {
+      element.removeEventListener(eventType, listener)
+      if (debug) {
+        console.log(`[setupViewportEventListener] Listener removed for ${eventType}`)
+      }
+    }
+  }
+  
   return {
     createRenderingEngine,
     createStackViewport,
     resizeViewport,
     destroyRenderingEngine,
+    setupViewportEventListener,
   }
 }

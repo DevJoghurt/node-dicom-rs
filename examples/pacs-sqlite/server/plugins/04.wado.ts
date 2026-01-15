@@ -7,7 +7,7 @@
 
 import { WadoServer, WadoStorageType } from '@nuxthealth/node-dicom';
 import { join } from 'path';
-import { defineNitroPlugin, useDatabase } from "#imports";
+import { defineNitroPlugin } from "#imports";
 
 const WADO_PORT: number = 8043;
 const DICOM_STORAGE_PATH: string = join(process.cwd(), '.data', 'dicom');

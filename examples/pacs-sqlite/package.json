@@ -12,9 +12,9 @@
     "download-testdata": "bash scripts/downloadTestData.sh"
   },
   "dependencies": {
-    "@cornerstonejs/core": "4.15.7",
-    "@cornerstonejs/dicom-image-loader": "4.15.7",
-    "@cornerstonejs/tools": "4.15.7",
+    "@cornerstonejs/core": "4.15.9",
+    "@cornerstonejs/dicom-image-loader": "4.15.9",
+    "@cornerstonejs/tools": "4.15.9",
     "@nuxthealth/node-dicom": "0.2.1",
     "dcmjs": "^0.47.1",
     "dicom-parser": "^1.8.21",
@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@originjs/vite-plugin-commonjs": "^1.0.3",
-    "@types/node": "^25.0.3",
+    "@types/node": "^25.0.8",
     "typescript": "^5.9.3",
     "vite-plugin-wasm": "^3.5.0"
   }
