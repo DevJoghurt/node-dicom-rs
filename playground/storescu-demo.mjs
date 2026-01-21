@@ -20,7 +20,7 @@ const sender = new StoreScu({
 });
 
 // Add files from testdata
-sender.addDirectory('./playground/testdata/1.3.6.1.4.1.9328.50.2.125354');
+sender.addFolder('./playground/testdata/1.3.6.1.4.1.9328.50.2.125354');
 
 console.log('🚀 Starting transfer...\n');
 

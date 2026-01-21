@@ -630,12 +630,171 @@ const sender = new StoreScu({
 });
 ```
 
+#### s3Config
+
+**Type:** `S3Config` (optional)  
+**Default:** `undefined` (uses local filesystem)
+
+Configuration for reading DICOM files from S3-compatible object storage (AWS S3, MinIO, DigitalOcean Spaces, etc.). When provided, `addFile()` and `addFolder()` treat paths as S3 keys/prefixes instead of local filesystem paths.
+
+**S3Config Structure:**
+
+```typescript
+interface S3Config {
+    bucket: string;              // S3 bucket name (required)
+    accessKey: string;           // AWS Access Key ID (required)
+    secretKey: string;           // AWS Secret Access Key (required)
+    region?: string;             // AWS region (default: 'us-east-1')
+    endpoint?: string;           // Custom S3 endpoint URL (for MinIO, etc.)
+}
+```
+
+**AWS S3 Example:**
+
+```typescript
+const sender = new StoreScu({
+    addr: 'PACS@pacs.hospital.com:104',
+    callingAeTitle: 'CLOUD-SCU',
+    s3Config: {
+        bucket: 'dicom-archive',
+        accessKey: process.env.AWS_ACCESS_KEY_ID!,
+        secretKey: process.env.AWS_SECRET_ACCESS_KEY!,
+        region: 'us-east-1'
+    }
+});
+
+// Now addFile/addFolder treat paths as S3 keys
+sender.addFile('patient123/study456/series789/image.dcm');
+sender.addFolder('patient123/'); // All files under this prefix
+```
+
+**MinIO (Self-Hosted S3) Example:**
+
+```typescript
+const sender = new StoreScu({
+    addr: 'PACS@pacs.hospital.com:104',
+    s3Config: {
+        bucket: 'dicom-files',
+        accessKey: 'minioadmin',
+        secretKey: 'minioadmin',
+        endpoint: 'http://localhost:9000'  // MinIO server
+    }
+});
+
+sender.addFile('uploads/scan.dcm');
+```
+
+**DigitalOcean Spaces Example:**
+
+```typescript
+const sender = new StoreScu({
+    addr: 'PACS@pacs.hospital.com:104',
+    s3Config: {
+        bucket: 'dicom-space',
+        accessKey: 'DO_SPACES_KEY',
+        secretKey: 'DO_SPACES_SECRET',
+        region: 'nyc3',
+        endpoint: 'https://nyc3.digitaloceanspaces.com'
+    }
+});
+
+sender.addFolder('dicom-archive/2024/');
+```
+
+**Key Features:**
+
+- **On-Demand Download**: Files are downloaded only when needed during transfer (memory efficient)
+- **Prefix Scanning**: `addFolder()` lists all objects with the given prefix
+- **Transfer Syntax Negotiation**: Same as local files
+- **Concurrent Transfer**: Works seamlessly with `concurrency` option
+- **Error Handling**: Failed downloads are reported via `onFileError` callback
+
+**Best Practices:**
+
+1. **Use IAM credentials**: Create AWS IAM user with S3 bucket access instead of root credentials
+2. **Organize by study**: Use paths like `{patientID}/{studyUID}/{seriesUID}/{instanceUID}.dcm`
+3. **Use environment variables**: Store credentials in `process.env`, not in code
+4. **Test connectivity**: Verify S3 access before large transfers
+5. **Monitor bandwidth**: Large concurrent transfers may consume significant bandwidth
+
+**Troubleshooting:**
+
+| Issue | Solution |
+|-------|----------|
+| `Access Denied` | Check accessKey/secretKey and bucket permissions |
+| `Bucket does not exist` | Verify bucket name matches exactly (case-sensitive) |
+| `Connection timeout` | Check endpoint URL and network connectivity to S3 |
+| `Invalid credentials` | Ensure credentials are not URL-encoded or truncated |
+| `Slow transfer` | Consider reducing concurrency or increasing maxPduLength |
+
+**Complete S3 Transfer Example:**
+
+```typescript
+const sender = new StoreScu({
+    addr: 'PACS@192.168.1.100:11112',
+    callingAeTitle: 'S3-TO-PACS',
+    s3Config: {
+        bucket: 'dicom-archive',
+        accessKey: process.env.AWS_ACCESS_KEY_ID!,
+        secretKey: process.env.AWS_SECRET_ACCESS_KEY!,
+        region: 'us-west-2'
+    },
+    concurrency: 4,
+    maxPduLength: 65536,
+    verbose: true
+});
+
+// Add all files from a study
+sender.addFolder('patient-123/study-456/');
+
+// Monitor transfer
+let transferredCount = 0;
+const result = await sender.send({
+    onTransferStarted: (err, event) => {
+        console.log(`Starting transfer of ${event.data?.totalFiles} files from S3`);
+    },
+    onFileSent: (err, event) => {
+        transferredCount++;
+        const data = event.data;
+        if (data) {
+            console.log(`[${transferredCount}] ✓ ${data.file} (${data.durationSeconds.toFixed(2)}s)`);
+        }
+    },
+    onFileError: (err, event) => {
+        console.error(`✗ Failed: ${event.data?.file}`);
+        console.error(`  Error: ${event.data?.error}`);
+    },
+    onTransferCompleted: (err, event) => {
+        const data = event.data;
+        if (data) {
+            console.log(`\n✓ Transfer complete!`);
+            console.log(`  Total: ${data.totalFiles} files`);
+            console.log(`  Successful: ${data.successful}`);
+            console.log(`  Failed: ${data.failed}`);
+            console.log(`  Duration: ${data.durationSeconds.toFixed(2)}s`);
+        }
+    }
+});
+```
+
 ## Adding Files
 
-### Single File
+### Single File (Local)
 
 ```typescript
 sender.addFile('/path/to/file.dcm');
+```
+
+### Single File (S3)
+
+```typescript
+const sender = new StoreScu({
+    addr: '192.168.1.100:104',
+    s3Config: { /* S3 config */ }
+});
+
+// S3 key instead of file path
+sender.addFile('patient123/study456/image.dcm');
 ```
 
 ### Multiple Files
@@ -649,10 +808,24 @@ sender.addFile('/path/to/scan3.dcm');
 ### Directory (Recursive)
 
 ```typescript
-sender.addDirectory('/path/to/dicom/folder');
+sender.addFolder('/path/to/dicom/folder');
 ```
 
 This recursively scans the directory and adds all `.dcm` files.
+
+### S3 Prefix (Recursive)
+
+```typescript
+const sender = new StoreScu({
+    addr: '192.168.1.100:104',
+    s3Config: { /* S3 config */ }
+});
+
+// S3 prefix - adds all objects under this prefix
+sender.addFolder('patient123/'); // All files under this prefix
+sender.addFolder('archive/2024/01/'); // Year/month organization
+sender.addFolder(''); // Entire bucket (use with caution!)
+```
 
 ### From Memory/Buffer
 
@@ -994,7 +1167,7 @@ if (failures.length > 0) {
     };
 
     // Add all DICOM files from directory
-    sender.addDirectory(studyPath);
+    sender.addFolder(studyPath);
 
     console.log(`Sending study from: ${studyPath}`);
     console.log(`Target: ${remoteAddress}`);

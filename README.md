@@ -71,7 +71,7 @@ const sender = new StoreScu({
 
 // Add files
 sender.addFile('./path/to/file.dcm');
-sender.addDirectory('./dicom-folder');
+sender.addFolder('./dicom-folder');
 
 // Send with progress tracking
 const result = await sender.send({
