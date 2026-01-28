@@ -353,10 +353,16 @@ impl DicomFile {
                 // Read from S3
                 let data = self.read_from_s3(&path).await?;
                 
-                // Parse DICOM from bytes with auto-detection of preamble
+                // Try to parse DICOM from bytes with auto-detection of preamble
+                // If that fails (e.g., dataset-only file), try without preamble
                 let dicom_file = OpenFileOptions::new()
                     .read_preamble(ReadPreamble::Auto)
                     .from_reader(&data[..])
+                    .or_else(|_| {
+                        OpenFileOptions::new()
+                            .read_preamble(ReadPreamble::Never)
+                            .from_reader(&data[..])
+                    })
                     .map_err(|e| napi::Error::from_reason(format!("Failed to parse DICOM from S3: {}", e)))?;
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
@@ -364,10 +370,16 @@ impl DicomFile {
             },
             StorageBackend::Filesystem => {
                 // Read from filesystem with auto-detection of preamble
+                // If that fails (e.g., dataset-only file), try without preamble
                 let resolved_path = self.resolve_path(&path);
                 let dicom_file = OpenFileOptions::new()
                     .read_preamble(ReadPreamble::Auto)
                     .open_file(&resolved_path)
+                    .or_else(|_| {
+                        OpenFileOptions::new()
+                            .read_preamble(ReadPreamble::Never)
+                            .open_file(&resolved_path)
+                    })
                     .map_err(|e| napi::Error::from_reason(format!("Failed to open DICOM file: {}", e)))?;
                 
                 *self.dicom_file.lock().unwrap() = Some(dicom_file);
